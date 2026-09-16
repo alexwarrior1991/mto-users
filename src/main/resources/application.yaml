@@ -1,3 +1,147 @@
 spring:
   application:
     name: mto-users
+  profiles:
+    default: ${SPRING_PROFILES_DEFAULT:dev}
+  # La API es un resource server: no emite tokens ni guarda usuarios, solo valida los que emite
+  # Keycloak. El JWK Set se descarga de forma perezosa, con lo que un Keycloak que aun no responde
+  # no impide arrancar.
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${KEYCLOAK_ISSUER_URI:http://auth.mto.local:8082/realms/mto}
+  threads:
+    virtual:
+      enabled: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: ${MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE:health,info,metrics,prometheus}
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: ${MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS:when_authorized}
+    info:
+      access: unrestricted
+    metrics:
+      access: unrestricted
+    prometheus:
+      access: unrestricted
+  info:
+    env:
+      enabled: true
+
+  # Trazabilidad distribuida. Mismos valores que el resto de servicios, a proposito.
+  tracing:
+    enabled: ${MTO_TRACING_ENABLED:true}
+    sampling:
+      probability: ${MTO_TRACING_SAMPLING_PROBABILITY:0.1}
+
+  otlp:
+    tracing:
+      endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
+    metrics:
+      export:
+        # Las metricas salen por Prometheus (ver /actuator/prometheus). El starter de OpenTelemetry
+        # arrastra tambien un registro OTLP de metricas, y sin esto intentaria empujarlas a un
+        # colector ademas de exponerlas.
+        enabled: false
+
+info:
+  app:
+    name: ${spring.application.name}
+    description: Users, roles and profiles administration API (Keycloak)
+    version: ${APP_VERSION:0.0.1-SNAPSHOT}
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+    tags-sorter: alpha
+    display-request-duration: true
+    doc-expansion: none
+    disable-swagger-default-url: true
+  show-actuator: ${SPRINGDOC_SHOW_ACTUATOR:false}
+
+app:
+  security:
+    # Cliente de Keycloak que representa a esta API. Sus roles de cliente son los permisos que
+    # comprueba la cadena de filtros (users-read, users-write, users-delete, users-roles-write,
+    # users-password-reset, users-profiles-write, ops-metrics, ops-write).
+    client-id: ${KEYCLOAK_USERS_CLIENT_ID:mto-users-api}
+    # Claim que se usa como nombre del principal, y por tanto como actor en la auditoria.
+    principal-claim: preferred_username
+    audience-validation-enabled: ${KEYCLOAK_AUDIENCE_VALIDATION_ENABLED:true}
+    # Si la validacion de audiencia esta activa y este valor llega vacio, la aplicacion no arranca:
+    # sin audiencia la API aceptaria cualquier token emitido por el realm.
+    required-audience: ${KEYCLOAK_AUDIENCE:mto-users-api}
+    # Publicar /swagger-ui y /v3/api-docs sin autenticacion. Cerrado por defecto; los perfiles de
+    # desarrollo lo abren explicitamente.
+    expose-api-docs: ${APP_SECURITY_EXPOSE_API_DOCS:false}
+    cors:
+      allowed-origins:
+        - ${APP_CORS_ALLOWED_ORIGIN:http://localhost:4200}
+      allowed-methods:
+        - GET
+        - POST
+        - PUT
+        - PATCH
+        - DELETE
+        - OPTIONS
+      allowed-headers:
+        - Authorization
+        - Content-Type
+        - X-Correlation-Id
+      exposed-headers:
+        - Location
+        - X-Correlation-Id
+      allow-credentials: false
+      max-age: ${APP_CORS_MAX_AGE:3600}
+
+  # Admin API de Keycloak, con la cuenta de servicio de este servicio (client_credentials). El
+  # cliente lo crea keycloak/mto-users-partial-import.json; sus roles de realm-management
+  # (view-users, query-users, manage-users, view-clients, query-clients, view-realm) los concede
+  # mto-platform/keycloak/apply-partials.sh. No se usa ninguna credencial del realm master.
+  keycloak:
+    # Raiz de Keycloak, SIN realm. El mismo host que el iss de los tokens.
+    auth-server-url: ${KEYCLOAK_AUTH_SERVER_URL:http://auth.mto.local:8082}
+    realm: ${KEYCLOAK_REALM:mto}
+    admin-client-id: ${KEYCLOAK_ADMIN_CLIENT_ID:mto-users-svc}
+    # Vacio por defecto: la aplicacion arranca (el token se pide en la primera llamada) y esa
+    # primera llamada falla con un 502 que dice por que. Con el secreto mal, lo mismo.
+    admin-client-secret: ${KEYCLOAK_ADMIN_CLIENT_SECRET:}
+    # Timeouts del cliente HTTP hacia Keycloak. Una administracion de usuarios que se queda
+    # colgada porque Keycloak no responde es peor que un 503 inmediato.
+    connect-timeout: ${KEYCLOAK_CONNECT_TIMEOUT:2s}
+    read-timeout: ${KEYCLOAK_READ_TIMEOUT:10s}
+    pool-size: ${KEYCLOAK_POOL_SIZE:10}
+    # Clientes cuyos roles esta API se niega a listar y a asignar. manage-users permite mapear
+    # cualquier rol, realm-admin incluido: esta lista es lo que impide que users-roles-write se
+    # convierta en administrador del realm.
+    protected-clients:
+      - realm-management
+      - broker
+      - account
+      - account-console
+      - admin-cli
+      - security-admin-console
+
+  # Perfiles: los roles compuestos de realm de la plataforma. Cada servicio define los suyos en su
+  # partial import (mto-viewer, mto-warehouse-admin, mto-maintenance-manager, mto-users-admin...) y
+  # mto-ops los cruza. Esta API los lista por prefijo y no persiste nada.
+  profiles:
+    prefix: ${APP_PROFILES_PREFIX:mto-}
+    # Roles de realm con el prefijo que NO se administran desde aqui (lista separada por comas).
+    excluded: ${APP_PROFILES_EXCLUDED:}
+
+  # Identificador de correlacion. El gateway lo genera y lo propaga; aqui se acepta si es valido y
+  # se genera si falta.
+  correlation:
+    header-name: X-Correlation-Id
+    max-length: 64

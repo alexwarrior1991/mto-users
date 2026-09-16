@@ -1,0 +1,67 @@
+{
+  "clients": [
+    {
+      "clientId": "mto-users-svc",
+      "secret": "mto-users-svc-secret"
+    }
+  ],
+  "users": [
+    {
+      "username": "usuarios.lector",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Lucia",
+      "lastName": "Lectora",
+      "email": "usuarios.lector@mto.local",
+      "requiredActions": [],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "local",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "mto-users-viewer"
+      ]
+    },
+    {
+      "username": "usuarios.gestor",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Gonzalo",
+      "lastName": "Gestor",
+      "email": "usuarios.gestor@mto.local",
+      "requiredActions": [],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "local",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "mto-users-manager"
+      ]
+    },
+    {
+      "username": "usuarios.responsable",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Rosa",
+      "lastName": "Responsable",
+      "email": "usuarios.responsable@mto.local",
+      "requiredActions": [],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "local",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "mto-users-admin"
+      ]
+    }
+  ]
+}

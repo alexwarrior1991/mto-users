@@ -1,0 +1,111 @@
+{
+  "roles": {
+    "client": {
+      "mto-users-api": [
+        {
+          "name": "users-read",
+          "description": "Consulta de usuarios, de sus roles y perfiles, y de los catalogos de roles y perfiles"
+        },
+        {
+          "name": "users-write",
+          "description": "Alta y modificacion de usuarios, habilitar y deshabilitar, y envio de acciones requeridas por correo"
+        },
+        {
+          "name": "users-delete",
+          "description": "Borrado de usuarios. Aparte de users-write: es la unica operacion irreversible"
+        },
+        {
+          "name": "users-roles-write",
+          "description": "Asignar y quitar roles de cliente a un usuario"
+        },
+        {
+          "name": "users-password-reset",
+          "description": "Fijar una contrasena temporal a un usuario"
+        },
+        {
+          "name": "users-profiles-write",
+          "description": "Asignar y quitar perfiles (roles compuestos de realm) a un usuario"
+        },
+        {
+          "name": "ops-metrics",
+          "description": "Lectura de los endpoints de Actuator de mto-users"
+        },
+        {
+          "name": "ops-write",
+          "description": "Operaciones de Actuator de mto-users que modifican estado"
+        }
+      ]
+    },
+    "realm": [
+      {
+        "name": "mto-users-viewer",
+        "description": "Consulta de usuarios, roles y perfiles",
+        "composite": true,
+        "composites": {
+          "client": {
+            "mto-users-api": [
+              "users-read"
+            ]
+          }
+        }
+      },
+      {
+        "name": "mto-users-manager",
+        "description": "Gestion de usuarios: alta, modificacion, roles, perfiles y contrasenas temporales",
+        "composite": true,
+        "composites": {
+          "client": {
+            "mto-users-api": [
+              "users-read",
+              "users-write",
+              "users-roles-write",
+              "users-password-reset",
+              "users-profiles-write"
+            ]
+          }
+        }
+      },
+      {
+        "name": "mto-users-admin",
+        "description": "Administracion completa de usuarios: ademas de la gestion, el borrado",
+        "composite": true,
+        "composites": {
+          "client": {
+            "mto-users-api": [
+              "users-read",
+              "users-write",
+              "users-delete",
+              "users-roles-write",
+              "users-password-reset",
+              "users-profiles-write"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "mto-users-api",
+      "name": "API de usuarios MTO",
+      "description": "Resource server. No inicia ningun flujo: existe para declarar los permisos como roles de cliente y para ser la audiencia de los tokens.",
+      "enabled": true,
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false
+    },
+    {
+      "clientId": "mto-users-svc",
+      "name": "Cuenta de servicio de mto-users",
+      "description": "Cuenta con la que mto-users llama a la Admin API de este mismo realm (client_credentials). Sus seis roles de realm-management los concede apply-partials.sh: una importacion parcial no asigna roles a cuentas de servicio.",
+      "enabled": true,
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true
+    }
+  ]
+}
