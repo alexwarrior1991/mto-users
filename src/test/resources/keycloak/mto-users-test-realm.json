@@ -32,7 +32,8 @@
               "users-write",
               "users-roles-write",
               "users-password-reset",
-              "users-profiles-write"
+              "users-profiles-write",
+              "users-sessions-write"
             ]
           }
         }
@@ -49,7 +50,8 @@
               "users-delete",
               "users-roles-write",
               "users-password-reset",
-              "users-profiles-write"
+              "users-profiles-write",
+              "users-sessions-write"
             ]
           }
         }
@@ -92,6 +94,9 @@
         },
         {
           "name": "ops-write"
+        },
+        {
+          "name": "users-sessions-write"
         }
       ],
       "mto-stock-api": [
@@ -176,6 +181,38 @@
       "lastName": "Existente",
       "email": "existente@mto.local",
       "requiredActions": [],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "local",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "mto-users-viewer"
+      ],
+      "attributes": {
+        "departamento": [
+          "taller"
+        ]
+      }
+    },
+    {
+      "username": "consultor",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Clara",
+      "lastName": "Consultora",
+      "email": "consultor@mto.local",
+      "requiredActions": [],
+      "attributes": {
+        "departamento": [
+          "operaciones"
+        ],
+        "turno": [
+          "noche"
+        ]
+      },
       "credentials": [
         {
           "type": "password",

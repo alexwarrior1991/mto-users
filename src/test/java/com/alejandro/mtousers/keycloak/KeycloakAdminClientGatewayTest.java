@@ -8,6 +8,8 @@ import com.alejandro.mtousers.exception.KeycloakRequestException;
 import com.alejandro.mtousers.exception.KeycloakUnavailableException;
 import com.alejandro.mtousers.exception.KeycloakUpstreamException;
 import com.alejandro.mtousers.exception.ProfileNotFoundException;
+import com.alejandro.mtousers.exception.RoleNotFoundException;
+import com.alejandro.mtousers.exception.SessionNotFoundException;
 import com.alejandro.mtousers.exception.UserAlreadyExistsException;
 import com.alejandro.mtousers.exception.UserNotFoundException;
 import jakarta.ws.rs.BadRequestException;
@@ -33,6 +35,7 @@ import org.keycloak.representations.idm.ClientRepresentation;
 import org.keycloak.representations.idm.CredentialRepresentation;
 import org.keycloak.representations.idm.RoleRepresentation;
 import org.keycloak.representations.idm.UserRepresentation;
+import org.keycloak.representations.idm.UserSessionRepresentation;
 import org.mockito.ArgumentCaptor;
 
 import java.net.ConnectException;
@@ -91,13 +94,27 @@ class KeycloakAdminClientGatewayTest {
 
     @Test
     void searchPassesEveryFilterAndTurnsBlanksIntoNulls() {
-        when(usersQuery.search("garcia", null, null, false, null, 20, 10, false)).thenReturn(List.of(new UserRepresentation()));
-        when(usersQuery.count("garcia", null, null, false, null)).thenReturn(null);
+        when(usersQuery.search("garcia", null, null, false, null, null, 20, 10, false)).thenReturn(List.of(new UserRepresentation()));
+        when(usersQuery.count("garcia", null, null, false, null, null)).thenReturn(null);
 
-        UserSearchCriteria criteria = new UserSearchCriteria("garcia", " ", "", false, null, 20, 10);
+        UserSearchCriteria criteria = new UserSearchCriteria("garcia", " ", "", false, null, null, 20, 10);
 
         assertEquals(1, gateway.searchUsers(criteria).size());
         assertEquals(0, gateway.countUsers(criteria), "Un count sin cuerpo cuenta como cero, no como error");
+    }
+
+    /** Los atributos viajan en el parametro 'q' de Keycloak, separados por espacios. */
+    @Test
+    void attributesTravelAsKeycloaksQueryParameter() {
+        when(usersQuery.search(null, null, null, true, null, "departamento:operaciones turno:noche", 0, 20, false))
+                .thenReturn(List.of(new UserRepresentation()));
+        when(usersQuery.count(null, null, null, true, null, "departamento:operaciones turno:noche")).thenReturn(1);
+
+        UserSearchCriteria criteria = new UserSearchCriteria(null, null, null, true, null,
+                List.of("departamento:operaciones", "turno:noche"), 0, 20);
+
+        assertEquals(1, gateway.searchUsers(criteria).size());
+        assertEquals(1, gateway.countUsers(criteria));
     }
 
     @Test
@@ -263,6 +280,68 @@ class KeycloakAdminClientGatewayTest {
         when(clientRoles.list()).thenReturn(List.of(role("r1", "stock-read")));
 
         assertEquals("stock-read", gateway.listClientRoles("uuid-stock").getFirst().getName());
+    }
+
+    @Test
+    void roleMembersAreAskedWithoutTheBriefRepresentationAndAMissingRoleIs404() {
+        ClientResource clientResource = mock(ClientResource.class);
+        RolesResource clientRoles = mock(RolesResource.class);
+        RoleResource roleResource = mock(RoleResource.class);
+        RoleResource missing = mock(RoleResource.class);
+        when(clients.get("uuid-stock")).thenReturn(clientResource);
+        when(clientResource.roles()).thenReturn(clientRoles);
+        when(clientRoles.get("stock-read")).thenReturn(roleResource);
+        when(clientRoles.get("stock-fly")).thenReturn(missing);
+        when(roleResource.getUserMembers(false, 0, 20)).thenReturn(List.of(user("ana.uno")));
+        when(missing.getUserMembers(false, 0, 20)).thenThrow(new NotFoundException());
+
+        assertEquals("ana.uno", gateway.listClientRoleMembers("uuid-stock", "stock-read", 0, 20).getFirst().getUsername());
+        assertThrows(RoleNotFoundException.class, () -> gateway.listClientRoleMembers("uuid-stock", "stock-fly", 0, 20));
+    }
+
+    @Test
+    void realmRoleMembersUseTheSameEndpointAndAMissingRoleIsAMissingProfile() {
+        RoleResource roleResource = mock(RoleResource.class);
+        RoleResource missing = mock(RoleResource.class);
+        when(realmRoles.get("mto-users-viewer")).thenReturn(roleResource);
+        when(realmRoles.get("mto-nope")).thenReturn(missing);
+        when(roleResource.getUserMembers(false, 5, 10)).thenReturn(List.of(user("ana.uno")));
+        when(missing.getUserMembers(false, 0, 20)).thenThrow(new NotFoundException());
+
+        assertEquals(1, gateway.listRealmRoleMembers("mto-users-viewer", 5, 10).size());
+        assertThrows(ProfileNotFoundException.class, () -> gateway.listRealmRoleMembers("mto-nope", 0, 20));
+    }
+
+    @Test
+    void sessionsAreReadFromTheUserAndClosedOneByOneOnTheRealm() {
+        UserSessionRepresentation session = new UserSessionRepresentation();
+        session.setId("session-1");
+        when(user.getUserSessions()).thenReturn(List.of(session));
+
+        assertEquals("session-1", gateway.listUserSessions(USER_ID).getFirst().getId());
+
+        gateway.logoutUser(USER_ID);
+        verify(user).logout();
+
+        gateway.deleteSession("session-1");
+        verify(realm).deleteSession("session-1", false);
+    }
+
+    @Test
+    void aSessionThatIsNoLongerThereIs404AndAMissingUserKeepsBeingAUserProblem() {
+        doThrow(new NotFoundException()).when(realm).deleteSession("gone", false);
+        when(user.getUserSessions()).thenThrow(new NotFoundException());
+        doThrow(new NotFoundException()).when(user).logout();
+
+        assertThrows(SessionNotFoundException.class, () -> gateway.deleteSession("gone"));
+        assertThrows(UserNotFoundException.class, () -> gateway.listUserSessions(USER_ID));
+        assertThrows(UserNotFoundException.class, () -> gateway.logoutUser(USER_ID));
+    }
+
+    private static UserRepresentation user(String username) {
+        UserRepresentation user = new UserRepresentation();
+        user.setUsername(username);
+        return user;
     }
 
     private static KeycloakAdminProperties properties() {

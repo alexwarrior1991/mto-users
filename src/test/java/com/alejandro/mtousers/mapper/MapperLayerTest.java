@@ -6,12 +6,14 @@ import com.alejandro.mtousers.dto.RequiredAction;
 import com.alejandro.mtousers.dto.UpdateUserRequest;
 import com.alejandro.mtousers.dto.UserResponse;
 import com.alejandro.mtousers.dto.UserRolesResponse;
+import com.alejandro.mtousers.dto.UserSessionResponse;
 import org.junit.jupiter.api.Test;
 import org.keycloak.representations.idm.ClientMappingsRepresentation;
 import org.keycloak.representations.idm.ClientRepresentation;
 import org.keycloak.representations.idm.CredentialRepresentation;
 import org.keycloak.representations.idm.RoleRepresentation;
 import org.keycloak.representations.idm.UserRepresentation;
+import org.keycloak.representations.idm.UserSessionRepresentation;
 import org.mapstruct.factory.Mappers;
 
 import java.time.Instant;
@@ -141,6 +143,35 @@ class MapperLayerTest {
         assertEquals(List.of(new ClientRoleAssignment("mto-stock-api", List.of("stock-read", "stock-write")),
                 new ClientRoleAssignment("mto-users-api", List.of())), response.clientRoles());
         assertEquals(new UserRolesResponse(List.of(), List.of()), roleMapper.toUserRolesResponse(null, null));
+    }
+
+    @Test
+    void aSessionKeepsOnlyTheClientNamesAndTurnsTheTimestampsIntoInstants() {
+        UserSessionRepresentation session = new UserSessionRepresentation();
+        session.setId("session-1");
+        session.setUsername("ana.uno");
+        session.setUserId("id-1");
+        session.setIpAddress("10.0.0.9");
+        session.setStart(1_700_000_000_000L);
+        session.setLastAccess(1_700_000_060_000L);
+        session.setClients(new java.util.LinkedHashMap<>(Map.of("uuid-b", "mto-users-api", "uuid-a", "mto-frontend")));
+
+        UserSessionResponse response = userMapper.toSessionResponse(session);
+
+        assertEquals("session-1", response.id());
+        assertEquals("ana.uno", response.username());
+        assertEquals("10.0.0.9", response.ipAddress());
+        assertEquals(Instant.ofEpochMilli(1_700_000_000_000L), response.startedAt());
+        assertEquals(Instant.ofEpochMilli(1_700_000_060_000L), response.lastAccessAt());
+        assertEquals(List.of("mto-frontend", "mto-users-api"), response.clients(), "Ordenados y sin el UUID interno");
+        assertTrue(userMapper.toSessionResponses(null).isEmpty());
+        assertEquals(List.of(), userMapper.toSessionResponse(sessionWithoutClients()).clients());
+    }
+
+    private static UserSessionRepresentation sessionWithoutClients() {
+        UserSessionRepresentation session = new UserSessionRepresentation();
+        session.setId("session-2");
+        return session;
     }
 
     private static RoleRepresentation namedRole(String name) {

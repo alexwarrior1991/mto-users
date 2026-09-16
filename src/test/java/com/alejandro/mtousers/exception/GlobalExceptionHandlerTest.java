@@ -4,6 +4,9 @@ import com.alejandro.mtousers.configuration.web.CorrelationIdFilter;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.config.BeanDefinition;
+import org.springframework.context.annotation.ClassPathScanningCandidateComponentProvider;
+import org.springframework.core.type.filter.AssignableTypeFilter;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -12,9 +15,14 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -29,6 +37,33 @@ class GlobalExceptionHandlerTest {
     @AfterEach
     void clearMdc() {
         MDC.clear();
+    }
+
+    /**
+     * El handler de {@link UsersException} es una red de seguridad que responde 422. Si una
+     * excepción nueva se queda solo con él, la API contesta 422 donde quería contestar 404 o 400 y
+     * el test de la clase no lo ve, porque llamar al método a mano acierta igual: lo que decide es
+     * la lista de {@code @ExceptionHandler}. Por eso cada subclase tiene que estar nombrada.
+     */
+    @Test
+    void everyBusinessExceptionIsRoutedByItsOwnHandlerAndNotByTheCatchAll() {
+        Set<String> routed = Arrays.stream(GlobalExceptionHandler.class.getDeclaredMethods())
+                .map(method -> method.getAnnotation(ExceptionHandler.class))
+                .filter(Objects::nonNull)
+                .flatMap(annotation -> Arrays.stream(annotation.value()))
+                .filter(type -> type != UsersException.class)
+                .map(Class::getName)
+                .collect(Collectors.toSet());
+
+        ClassPathScanningCandidateComponentProvider scanner = new ClassPathScanningCandidateComponentProvider(false);
+        scanner.addIncludeFilter(new AssignableTypeFilter(UsersException.class));
+        List<String> unrouted = scanner.findCandidateComponents(UsersException.class.getPackageName()).stream()
+                .map(BeanDefinition::getBeanClassName)
+                .filter(name -> !routed.contains(name))
+                .sorted()
+                .toList();
+
+        assertEquals(List.of(), unrouted, "Les falta su propio @ExceptionHandler y caerían en el 422 genérico");
     }
 
     @Test
@@ -64,6 +99,10 @@ class GlobalExceptionHandlerTest {
         assertEquals(HttpStatus.BAD_REQUEST, handler.handleBadRequest(new ProtectedClientException("realm-management"), request).getStatusCode());
         assertEquals("ROL-PROTECTED-CLIENT", codeOf(handler.handleBadRequest(new ProtectedClientException("realm-management"), request)));
         assertEquals("KC-400", codeOf(handler.handleBadRequest(new KeycloakRequestException("bad"), request)));
+        assertEquals(HttpStatus.BAD_REQUEST, handler.handleBadRequest(new InvalidSearchException("no"), request).getStatusCode());
+        assertEquals("SEARCH-400", codeOf(handler.handleBadRequest(new InvalidSearchException("no"), request)));
+        assertEquals(HttpStatus.NOT_FOUND, handler.handleNotFound(new SessionNotFoundException("s"), request).getStatusCode());
+        assertEquals("SES-404", codeOf(handler.handleNotFound(new SessionNotFoundException("s"), request)));
         assertEquals(HttpStatus.BAD_GATEWAY, handler.handleKeycloakAccess(new KeycloakAccessException("nope", null), request).getStatusCode());
         assertEquals("KC-ACCESS", codeOf(handler.handleKeycloakAccess(new KeycloakAccessException("nope", null), request)));
         assertEquals(HttpStatus.BAD_GATEWAY, handler.handleKeycloakUpstream(new KeycloakUpstreamException("boom", null), request).getStatusCode());

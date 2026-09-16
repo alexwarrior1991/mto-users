@@ -4,11 +4,14 @@ import com.alejandro.mtousers.configuration.security.SecurityConfiguration;
 import com.alejandro.mtousers.dto.ClientResponse;
 import com.alejandro.mtousers.dto.ClientRoleResponse;
 import com.alejandro.mtousers.dto.RoleNamesRequest;
+import com.alejandro.mtousers.dto.UserResponse;
 import com.alejandro.mtousers.dto.UserRolesResponse;
 import com.alejandro.mtousers.service.RoleService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.Pattern;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -16,6 +19,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
@@ -32,6 +36,8 @@ public class RoleController {
 
     static final String CLIENT_ID_PATTERN = "[A-Za-z0-9._-]{1,255}";
     static final String CLIENT_ID_MESSAGE = "must be a Keycloak client id";
+    static final String ROLE_NAME_PATTERN = "[A-Za-z0-9._-]{1,255}";
+    static final String ROLE_NAME_MESSAGE = "must be a role name";
 
     private final RoleService roleService;
 
@@ -50,6 +56,19 @@ public class RoleController {
     public List<ClientRoleResponse> listClientRoles(
             @PathVariable @Pattern(regexp = CLIENT_ID_PATTERN, message = CLIENT_ID_MESSAGE) String clientId) {
         return roleService.listClientRoles(clientId);
+    }
+
+    @GetMapping("/roles/clients/{clientId}/{roleName}/users")
+    @Operation(summary = "Who holds a client role",
+            description = "Users with the role assigned **directly**. Keycloak does not expand composites here, so "
+                    + "someone who has the role through a profile does not show up; ask for the profile members "
+                    + "instead. Offset pagination without a total: Keycloak offers no count for role members.")
+    public List<UserResponse> listClientRoleMembers(
+            @PathVariable @Pattern(regexp = CLIENT_ID_PATTERN, message = CLIENT_ID_MESSAGE) String clientId,
+            @PathVariable @Pattern(regexp = ROLE_NAME_PATTERN, message = ROLE_NAME_MESSAGE) String roleName,
+            @RequestParam(defaultValue = "0") @Min(0) int first,
+            @RequestParam(defaultValue = "20") @Min(1) @Max(200) int max) {
+        return roleService.listClientRoleMembers(clientId, roleName, first, max);
     }
 
     @GetMapping("/{userId}/roles")

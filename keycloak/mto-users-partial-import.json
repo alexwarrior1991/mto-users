@@ -27,6 +27,10 @@
           "description": "Asignar y quitar perfiles (roles compuestos de realm) a un usuario"
         },
         {
+          "name": "users-sessions-write",
+          "description": "Cerrar sesiones abiertas de un usuario, una o todas"
+        },
+        {
           "name": "ops-metrics",
           "description": "Lectura de los endpoints de Actuator de mto-users"
         },
@@ -51,7 +55,7 @@
       },
       {
         "name": "mto-users-manager",
-        "description": "Gestion de usuarios: alta, modificacion, roles, perfiles y contrasenas temporales",
+        "description": "Gestion de usuarios: alta, modificacion, roles, perfiles, contrasenas y sesiones",
         "composite": true,
         "composites": {
           "client": {
@@ -60,7 +64,8 @@
               "users-write",
               "users-roles-write",
               "users-password-reset",
-              "users-profiles-write"
+              "users-profiles-write",
+              "users-sessions-write"
             ]
           }
         }
@@ -77,7 +82,8 @@
               "users-delete",
               "users-roles-write",
               "users-password-reset",
-              "users-profiles-write"
+              "users-profiles-write",
+              "users-sessions-write"
             ]
           }
         }

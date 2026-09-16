@@ -48,6 +48,8 @@ public class AdminAuditLog {
         CLIENT_ROLES_ADDED,
         CLIENT_ROLES_REMOVED,
         PROFILE_ASSIGNED,
-        PROFILE_REMOVED
+        PROFILE_REMOVED,
+        SESSION_REVOKED,
+        ALL_SESSIONS_REVOKED
     }
 }

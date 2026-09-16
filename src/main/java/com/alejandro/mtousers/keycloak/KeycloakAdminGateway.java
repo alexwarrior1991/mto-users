@@ -5,6 +5,7 @@ import org.keycloak.representations.idm.ClientRepresentation;
 import org.keycloak.representations.idm.MappingsRepresentation;
 import org.keycloak.representations.idm.RoleRepresentation;
 import org.keycloak.representations.idm.UserRepresentation;
+import org.keycloak.representations.idm.UserSessionRepresentation;
 
 import java.util.List;
 import java.util.Set;
@@ -49,6 +50,12 @@ public interface KeycloakAdminGateway {
 
     List<RoleRepresentation> listClientRoles(String clientUuid);
 
+    /**
+     * Quién tiene ese rol de cliente <b>asignado directamente</b>. Keycloak no expande los
+     * compuestos aquí: un usuario que tenga el rol porque se lo da un perfil no aparece.
+     */
+    List<UserRepresentation> listClientRoleMembers(String clientUuid, String roleName, int first, int max);
+
     MappingsRepresentation getUserRoleMappings(String userId);
 
     void addClientRoles(String userId, String clientUuid, List<RoleRepresentation> roles);
@@ -59,6 +66,9 @@ public interface KeycloakAdminGateway {
 
     RoleRepresentation findRealmRole(String roleName);
 
+    /** Quién tiene ese rol de realm asignado directamente. */
+    List<UserRepresentation> listRealmRoleMembers(String roleName, int first, int max);
+
     /** Los roles que un rol compuesto de realm contiene, de realm y de cliente ({@code clientRole=true}, {@code containerId} = UUID del cliente). */
     Set<RoleRepresentation> getRealmRoleComposites(String roleName);
 
@@ -67,4 +77,12 @@ public interface KeycloakAdminGateway {
     void addRealmRoles(String userId, List<RoleRepresentation> roles);
 
     void removeRealmRoles(String userId, List<RoleRepresentation> roles);
+
+    List<UserSessionRepresentation> listUserSessions(String userId);
+
+    /** Cierra todas las sesiones del usuario. Idempotente: sin sesiones abiertas no es un error. */
+    void logoutUser(String userId);
+
+    /** Cierra una sola sesión. La sesión pertenece al realm, no al usuario: ver la implementación. */
+    void deleteSession(String sessionId);
 }

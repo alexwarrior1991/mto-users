@@ -114,6 +114,11 @@ public class SecurityConfiguration {
                     authorize.requestMatchers(HttpMethod.PUT, API + "/*/profiles/**").hasRole(SecurityRoles.USERS_PROFILES_WRITE);
                     authorize.requestMatchers(HttpMethod.DELETE, API + "/*/profiles/**").hasRole(SecurityRoles.USERS_PROFILES_WRITE);
                     authorize.requestMatchers(HttpMethod.POST, API + "/*/reset-password").hasRole(SecurityRoles.USERS_PASSWORD_RESET);
+                    // Las sesiones cuelgan de dos segmentos, asi que la regla de DELETE de usuario
+                    // -que solo cubre uno- no las alcanza: sin estas dos lineas cerrar una sesion
+                    // caeria en el anyRequest().authenticated() del final y bastaria un token.
+                    authorize.requestMatchers(HttpMethod.DELETE, API + "/*/sessions").hasRole(SecurityRoles.USERS_SESSIONS_WRITE);
+                    authorize.requestMatchers(HttpMethod.DELETE, API + "/*/sessions/**").hasRole(SecurityRoles.USERS_SESSIONS_WRITE);
                     authorize.requestMatchers(HttpMethod.DELETE, API + "/*").hasRole(SecurityRoles.USERS_DELETE);
 
                     authorize.requestMatchers(HttpMethod.GET, API + "/**").hasRole(SecurityRoles.USERS_READ);

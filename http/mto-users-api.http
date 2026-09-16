@@ -12,6 +12,10 @@ GET http://localhost:8084/api/v1/users?search=almacen&enabled=true&first=0&max=2
 Authorization: Bearer {{token}}
 X-Correlation-Id: http-file-001
 
+### Buscar por atributo (repetible; con 'search' o con la clave repetida responde 400 SEARCH-400)
+GET http://localhost:8084/api/v1/users?attribute=departamento:operaciones&attribute=turno:noche&max=50
+Authorization: Bearer {{token}}
+
 ### Crear usuario con contrasena temporal
 # @name createUser
 POST http://localhost:8084/api/v1/users
@@ -73,6 +77,10 @@ Authorization: Bearer {{token}}
 GET http://localhost:8084/api/v1/users/roles/clients/mto-stock-api
 Authorization: Bearer {{token}}
 
+### Quien tiene un rol de cliente (solo asignaciones directas: los perfiles no se expanden)
+GET http://localhost:8084/api/v1/users/roles/clients/mto-stock-api/stock-read/users?first=0&max=20
+Authorization: Bearer {{token}}
+
 ### Roles asignados directamente al usuario
 GET http://localhost:8084/api/v1/users/{{userId}}/roles
 Authorization: Bearer {{token}}
@@ -99,6 +107,10 @@ Authorization: Bearer {{token}}
 GET http://localhost:8084/api/v1/users/profiles/mto-maintenance-manager
 Authorization: Bearer {{token}}
 
+### Quien tiene un perfil
+GET http://localhost:8084/api/v1/users/profiles/mto-warehouse-viewer/users?first=0&max=20
+Authorization: Bearer {{token}}
+
 ### Asignar un perfil
 PUT http://localhost:8084/api/v1/users/{{userId}}/profiles/mto-warehouse-viewer
 Authorization: Bearer {{token}}
@@ -109,6 +121,21 @@ Authorization: Bearer {{token}}
 
 ### Quitar un perfil
 DELETE http://localhost:8084/api/v1/users/{{userId}}/profiles/mto-warehouse-viewer
+Authorization: Bearer {{token}}
+
+### Sesiones abiertas del usuario
+# @name sessions
+GET http://localhost:8084/api/v1/users/{{userId}}/sessions
+Authorization: Bearer {{token}}
+
+> {% client.global.set("sessionId", response.body[0] ? response.body[0].id : ""); %}
+
+### Cerrar una sesion (404 SES-404 si no es de ese usuario)
+DELETE http://localhost:8084/api/v1/users/{{userId}}/sessions/{{sessionId}}
+Authorization: Bearer {{token}}
+
+### Cerrar todas las sesiones (idempotente; deshabilitar NO cierra las ya abiertas)
+DELETE http://localhost:8084/api/v1/users/{{userId}}/sessions
 Authorization: Bearer {{token}}
 
 ### Borrar

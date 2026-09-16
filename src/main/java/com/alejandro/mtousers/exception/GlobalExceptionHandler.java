@@ -61,7 +61,8 @@ public class GlobalExceptionHandler {
         return business(exception, HttpStatus.NOT_FOUND, request);
     }
 
-    @ExceptionHandler({ClientNotFoundException.class, RoleNotFoundException.class, ProfileNotFoundException.class})
+    @ExceptionHandler({ClientNotFoundException.class, RoleNotFoundException.class, ProfileNotFoundException.class,
+            SessionNotFoundException.class})
     public ResponseEntity<ProblemDetail> handleNotFound(UsersException exception, HttpServletRequest request) {
         return business(exception, HttpStatus.NOT_FOUND, request);
     }
@@ -71,7 +72,7 @@ public class GlobalExceptionHandler {
         return business(exception, HttpStatus.CONFLICT, request);
     }
 
-    @ExceptionHandler({ProtectedClientException.class, KeycloakRequestException.class})
+    @ExceptionHandler({ProtectedClientException.class, KeycloakRequestException.class, InvalidSearchException.class})
     public ResponseEntity<ProblemDetail> handleBadRequest(UsersException exception, HttpServletRequest request) {
         return business(exception, HttpStatus.BAD_REQUEST, request);
     }
