@@ -10,10 +10,12 @@ import com.alejandro.mtousers.dto.RequiredAction;
 import com.alejandro.mtousers.dto.ResetPasswordRequest;
 import com.alejandro.mtousers.dto.RoleNamesRequest;
 import com.alejandro.mtousers.dto.UpdateUserRequest;
+import com.alejandro.mtousers.dto.UserCredentialResponse;
 import com.alejandro.mtousers.dto.UserResponse;
 import com.alejandro.mtousers.dto.UserRolesResponse;
 import com.alejandro.mtousers.dto.UserSearchCriteria;
 import com.alejandro.mtousers.dto.UserSessionResponse;
+import com.alejandro.mtousers.exception.CredentialNotFoundException;
 import com.alejandro.mtousers.exception.InvalidSearchException;
 import com.alejandro.mtousers.exception.KeycloakUpstreamException;
 import com.alejandro.mtousers.exception.ProfileNotFoundException;
@@ -307,6 +309,97 @@ class KeycloakUsersIT {
         userService.delete(user.id());
     }
 
+    /**
+     * El agujero que esto cierra, de punta a punta: un token con {@code offline_access} no abre
+     * sesion normal, sobrevive a cerrar todas las sesiones y sigue refrescandose. Deshabilitar al
+     * usuario solo lo bloquea mientras esta deshabilitado —no revoca nada, al rehabilitarlo vuelve
+     * a servir—, asi que lo unico que lo mata es cerrar su sesion offline.
+     */
+    @Test
+    void anOfflineTokenSurvivesTheLogoutAndDiesWhenItsOwnSessionIsClosed() throws Exception {
+        String username = "off." + UUID.randomUUID().toString().substring(0, 8);
+        UserResponse user = userService.create(new CreateUserRequest(username, "Olga", "Offline",
+                username + "@mto.local", true, true, null, null, null));
+        userService.resetPassword(user.id(), new ResetPasswordRequest("Secreta.123", false));
+
+        String refreshToken = offlineTokenFor(username, "Secreta.123");
+        assertTrue(userService.listSessions(user.id()).isEmpty(), "Un token offline no deja sesion normal");
+
+        List<UserSessionResponse> offline = userService.listOfflineSessions(user.id());
+        assertEquals(1, offline.size());
+        assertEquals(username, offline.getFirst().username());
+        assertEquals(List.of("mto-test-frontend"), offline.getFirst().clients());
+        assertNotNull(offline.getFirst().startedAt());
+
+        // Cerrar todas las sesiones no lo toca: sigue refrescandose, que es justo el problema.
+        userService.revokeAllSessions(user.id());
+        assertEquals(1, userService.listOfflineSessions(user.id()).size());
+        assertEquals(200, refreshStatus(refreshToken));
+
+        // Deshabilitar bloquea el refresco mientras dura, pero no revoca nada: al rehabilitar
+        // vuelve a servir. Deshabilitar no es revocar.
+        userService.setEnabled(user.id(), false);
+        assertEquals(400, refreshStatus(refreshToken));
+        assertEquals(1, userService.listOfflineSessions(user.id()).size(), "La sesion offline sigue viva");
+        userService.setEnabled(user.id(), true);
+        assertEquals(200, refreshStatus(refreshToken));
+
+        String sessionId = offline.getFirst().id();
+        assertThrows(SessionNotFoundException.class, () -> userService.revokeOfflineSession(user.id(), "no-es-suya"));
+        assertEquals(1, userService.listOfflineSessions(user.id()).size());
+
+        userService.revokeOfflineSession(user.id(), sessionId);
+        assertTrue(userService.listOfflineSessions(user.id()).isEmpty());
+        assertEquals(400, refreshStatus(refreshToken), "Y ahora el token offline ya no vale");
+        assertThrows(SessionNotFoundException.class, () -> userService.revokeOfflineSession(user.id(), sessionId));
+
+        // Cerrar todas es idempotente, tambien sin ninguna abierta.
+        offlineTokenFor(username, "Secreta.123");
+        assertEquals(1, userService.listOfflineSessions(user.id()).size());
+        userService.revokeAllOfflineSessions(user.id());
+        assertTrue(userService.listOfflineSessions(user.id()).isEmpty());
+        userService.revokeAllOfflineSessions(user.id());
+
+        userService.delete(user.id());
+    }
+
+    /**
+     * Las credenciales, que es lo que hace falta para quitarle a alguien un segundo factor perdido.
+     * Aqui la credencial es una contrasena porque un OTP no se puede enrolar por la Admin API, pero
+     * el mecanismo —y el 404 de un id ajeno— es el mismo.
+     */
+    @Test
+    void theCredentialsOfAUserAreListedWithoutSecretsAndRemovedById() throws Exception {
+        String username = "cred." + UUID.randomUUID().toString().substring(0, 8);
+        UserResponse user = userService.create(new CreateUserRequest(username, "Carla", "Credencial",
+                username + "@mto.local", true, true, null, null, null));
+        assertTrue(userService.listCredentials(user.id()).isEmpty(), "Recien creado no tiene ninguna");
+
+        userService.resetPassword(user.id(), new ResetPasswordRequest("Secreta.123", false));
+        List<UserCredentialResponse> credentials = userService.listCredentials(user.id());
+        assertEquals(1, credentials.size());
+        assertEquals("password", credentials.getFirst().type());
+        assertNotNull(credentials.getFirst().id());
+        assertNotNull(credentials.getFirst().createdAt());
+        assertEquals(200, tokenStatus(username, "Secreta.123"));
+
+        // Una credencial de otra persona no se quita a traves de esta.
+        String otherUserId = userService.search(new UserSearchCriteria(null, "existente", null, null, null, List.of(), 0, 1))
+                .content().getFirst().id();
+        String otherCredentialId = userService.listCredentials(otherUserId).getFirst().id();
+        assertThrows(CredentialNotFoundException.class, () -> userService.deleteCredential(user.id(), otherCredentialId));
+        assertEquals(1, userService.listCredentials(otherUserId).size(), "Y la suya sigue donde estaba");
+
+        userService.deleteCredential(user.id(), credentials.getFirst().id());
+        assertTrue(userService.listCredentials(user.id()).isEmpty());
+        assertEquals(401, tokenStatus(username, "Secreta.123"), "Sin contrasena no se puede entrar");
+        assertThrows(CredentialNotFoundException.class,
+                () -> userService.deleteCredential(user.id(), credentials.getFirst().id()));
+
+        userService.delete(user.id());
+        assertThrows(UserNotFoundException.class, () -> userService.listCredentials(user.id()));
+    }
+
     private static UserSearchCriteria byAttributes(String... attributes) {
         return new UserSearchCriteria(null, null, null, null, null, List.of(attributes), 0, 10);
     }
@@ -320,17 +413,40 @@ class KeycloakUsersIT {
     }
 
     private static String tokenFor(String username, String password) throws Exception {
-        String form = "grant_type=password&client_id=mto-test-frontend"
+        HttpResponse<String> response = token("grant_type=password&client_id=mto-test-frontend"
                 + "&username=" + URLEncoder.encode(username, StandardCharsets.UTF_8)
-                + "&password=" + URLEncoder.encode(password, StandardCharsets.UTF_8);
-        HttpResponse<String> response = HttpClient.newHttpClient().send(HttpRequest.newBuilder()
+                + "&password=" + URLEncoder.encode(password, StandardCharsets.UTF_8));
+        assertEquals(200, response.statusCode(), response.body());
+        return JSON.readTree(response.body()).get("access_token").asString();
+    }
+
+    /** Devuelve el refresh token offline. Necesita el scope, que en Keycloak es opcional por cliente. */
+    private static String offlineTokenFor(String username, String password) throws Exception {
+        HttpResponse<String> response = token("grant_type=password&client_id=mto-test-frontend&scope=offline_access"
+                + "&username=" + URLEncoder.encode(username, StandardCharsets.UTF_8)
+                + "&password=" + URLEncoder.encode(password, StandardCharsets.UTF_8));
+        assertEquals(200, response.statusCode(), response.body());
+        return JSON.readTree(response.body()).get("refresh_token").asString();
+    }
+
+    private static int refreshStatus(String refreshToken) throws Exception {
+        return token("grant_type=refresh_token&client_id=mto-test-frontend&refresh_token="
+                + URLEncoder.encode(refreshToken, StandardCharsets.UTF_8)).statusCode();
+    }
+
+    private static int tokenStatus(String username, String password) throws Exception {
+        return token("grant_type=password&client_id=mto-test-frontend"
+                + "&username=" + URLEncoder.encode(username, StandardCharsets.UTF_8)
+                + "&password=" + URLEncoder.encode(password, StandardCharsets.UTF_8)).statusCode();
+    }
+
+    private static HttpResponse<String> token(String form) throws Exception {
+        return HttpClient.newHttpClient().send(HttpRequest.newBuilder()
                         .uri(URI.create(serverUrl() + "/realms/" + REALM + "/protocol/openid-connect/token"))
                         .header("Content-Type", "application/x-www-form-urlencoded")
                         .POST(HttpRequest.BodyPublishers.ofString(form))
                         .build(),
                 HttpResponse.BodyHandlers.ofString());
-        assertEquals(200, response.statusCode(), response.body());
-        return JSON.readTree(response.body()).get("access_token").asString();
     }
 
     private static JsonNode decode(String jwt) {

@@ -7,6 +7,7 @@ import com.alejandro.mtousers.dto.PageResponse;
 import com.alejandro.mtousers.dto.ResetPasswordRequest;
 import com.alejandro.mtousers.dto.UpdateUserRequest;
 import com.alejandro.mtousers.dto.UserEnabledRequest;
+import com.alejandro.mtousers.dto.UserCredentialResponse;
 import com.alejandro.mtousers.dto.UserResponse;
 import com.alejandro.mtousers.dto.UserSearchCriteria;
 import com.alejandro.mtousers.dto.UserSessionResponse;
@@ -54,6 +55,8 @@ public class UserController {
     static final String ATTRIBUTE_MESSAGE = "must be a key:value pair without spaces";
     static final String SESSION_ID_PATTERN = "[A-Za-z0-9:._-]{1,255}";
     static final String SESSION_ID_MESSAGE = "must be a Keycloak session id";
+    static final String CREDENTIAL_ID_PATTERN = "[A-Za-z0-9:._-]{1,255}";
+    static final String CREDENTIAL_ID_MESSAGE = "must be a Keycloak credential id";
 
     private final UserService userService;
 
@@ -148,6 +151,58 @@ public class UserController {
             @PathVariable @Pattern(regexp = USER_ID_PATTERN, message = USER_ID_MESSAGE) String userId,
             @PathVariable @Pattern(regexp = SESSION_ID_PATTERN, message = SESSION_ID_MESSAGE) String sessionId) {
         userService.revokeSession(userId, sessionId);
+        return ResponseEntity.noContent().build();
+    }
+
+    @GetMapping("/{userId}/offline-sessions")
+    @Operation(summary = "Offline sessions of a user",
+            description = "The sessions of tokens issued with the offline_access scope. They do not appear under "
+                    + "/sessions and closing every session does not close these: an offline token survives that by "
+                    + "design, and even survives disabling the user. Looked up client by client, because that is how "
+                    + "Keycloak exposes them.")
+    public List<UserSessionResponse> listOfflineSessions(@PathVariable @Pattern(regexp = USER_ID_PATTERN, message = USER_ID_MESSAGE) String userId) {
+        return userService.listOfflineSessions(userId);
+    }
+
+    @DeleteMapping("/{userId}/offline-sessions")
+    @Operation(summary = "Close every offline session of a user",
+            description = "Idempotent. Revoking these is what makes the offline refresh token stop working. To take "
+                    + "someone out completely: PATCH /enabled, DELETE /sessions and DELETE /offline-sessions.")
+    @ApiResponse(responseCode = "204", description = "Offline sessions closed")
+    public ResponseEntity<Void> revokeAllOfflineSessions(@PathVariable @Pattern(regexp = USER_ID_PATTERN, message = USER_ID_MESSAGE) String userId) {
+        userService.revokeAllOfflineSessions(userId);
+        return ResponseEntity.noContent().build();
+    }
+
+    @DeleteMapping("/{userId}/offline-sessions/{sessionId}")
+    @Operation(summary = "Close one offline session of a user",
+            description = "404 if that offline session is not one of this user's.")
+    @ApiResponse(responseCode = "204", description = "Offline session closed")
+    public ResponseEntity<Void> revokeOfflineSession(
+            @PathVariable @Pattern(regexp = USER_ID_PATTERN, message = USER_ID_MESSAGE) String userId,
+            @PathVariable @Pattern(regexp = SESSION_ID_PATTERN, message = SESSION_ID_MESSAGE) String sessionId) {
+        userService.revokeOfflineSession(userId, sessionId);
+        return ResponseEntity.noContent().build();
+    }
+
+    @GetMapping("/{userId}/credentials")
+    @Operation(summary = "Credentials of a user",
+            description = "Type, label and creation date of each credential (password, otp, webauthn...). No secret "
+                    + "and nothing about how it is stored.")
+    public List<UserCredentialResponse> listCredentials(@PathVariable @Pattern(regexp = USER_ID_PATTERN, message = USER_ID_MESSAGE) String userId) {
+        return userService.listCredentials(userId);
+    }
+
+    @DeleteMapping("/{userId}/credentials/{credentialId}")
+    @Operation(summary = "Remove a credential from a user",
+            description = "The case this exists for is a lost second factor: removing the otp credential lets the "
+                    + "person enrol again. Removing the password leaves them unable to log in with one until it is "
+                    + "reset. Never silently replaced by anything.")
+    @ApiResponse(responseCode = "204", description = "Credential removed")
+    public ResponseEntity<Void> deleteCredential(
+            @PathVariable @Pattern(regexp = USER_ID_PATTERN, message = USER_ID_MESSAGE) String userId,
+            @PathVariable @Pattern(regexp = CREDENTIAL_ID_PATTERN, message = CREDENTIAL_ID_MESSAGE) String credentialId) {
+        userService.deleteCredential(userId, credentialId);
         return ResponseEntity.noContent().build();
     }
 

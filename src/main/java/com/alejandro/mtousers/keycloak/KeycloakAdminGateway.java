@@ -2,6 +2,7 @@ package com.alejandro.mtousers.keycloak;
 
 import com.alejandro.mtousers.dto.UserSearchCriteria;
 import org.keycloak.representations.idm.ClientRepresentation;
+import org.keycloak.representations.idm.CredentialRepresentation;
 import org.keycloak.representations.idm.MappingsRepresentation;
 import org.keycloak.representations.idm.RoleRepresentation;
 import org.keycloak.representations.idm.UserRepresentation;
@@ -80,9 +81,35 @@ public interface KeycloakAdminGateway {
 
     List<UserSessionRepresentation> listUserSessions(String userId);
 
-    /** Cierra todas las sesiones del usuario. Idempotente: sin sesiones abiertas no es un error. */
+    /**
+     * Los clientes para los que el usuario tiene un <b>token offline</b> vivo, por su UUID.
+     *
+     * <p>Keycloak no ofrece «las sesiones offline de este usuario»: las sesiones offline se
+     * consultan cliente a cliente. Esta lista es el índice para no preguntar por todos: sale de los
+     * consentimientos del usuario, donde cada token offline deja una concesión {@code Offline Token}
+     * con el cliente al que pertenece.</p>
+     */
+    List<String> findClientsWithOfflineTokens(String userId);
+
+    /** Las sesiones offline del usuario en ese cliente. */
+    List<UserSessionRepresentation> listOfflineSessions(String userId, String clientUuid);
+
+    /**
+     * Cierra todas las sesiones <b>normales</b> del usuario. Idempotente: sin sesiones abiertas no
+     * es un error. No toca las offline: para esas, {@link #deleteSession(String, boolean)}.
+     */
     void logoutUser(String userId);
 
-    /** Cierra una sola sesión. La sesión pertenece al realm, no al usuario: ver la implementación. */
-    void deleteSession(String sessionId);
+    /**
+     * Cierra una sola sesión. La sesión pertenece al realm, no al usuario: ver la implementación.
+     * El {@code offline} tiene que coincidir con la clase de sesión: Keycloak responde 404 si se
+     * pide borrar una offline como normal, o al revés.
+     */
+    void deleteSession(String sessionId, boolean offline);
+
+    /** Las credenciales del usuario. Keycloak nunca devuelve el secreto, solo sus metadatos. */
+    List<CredentialRepresentation> listCredentials(String userId);
+
+    /** Quita una credencial del usuario. Un id que no sea suyo es un 404, lo comprueba Keycloak. */
+    void deleteCredential(String userId, String credentialId);
 }

@@ -69,7 +69,7 @@ Packages under `com.alejandro.mtousers`:
   list is what keeps `users-roles-write` from granting `realm-admin`.
 - **Permissions never imply each other** (`ApiAuthorizationRulesTest`): `users-read`, `users-write`,
   `users-delete`, `users-roles-write`, `users-password-reset`, `users-profiles-write`,
-  `users-sessions-write`, `ops-metrics`, `ops-write`. A new role goes to `SecurityRoles` **and**
+  `users-sessions-write`, `users-credentials-write`, `ops-metrics`, `ops-write`. A new role goes to `SecurityRoles` **and**
   `keycloak/mto-users-partial-import.json` (and to `mto-platform/keycloak/mto-ops-cross-service.json`
   if it is an `ops-*` role). A route with more than one segment after `{userId}` needs its own
   `requestMatcher`: the `DELETE API + "/*"` rule does not reach `/{userId}/sessions/{sessionId}`.
@@ -83,7 +83,16 @@ Packages under `com.alejandro.mtousers`:
   return **direct assignments only**, never expanded composites, and that is documented, not fixed.
 - **Closing one session checks it belongs to that user first**: the Keycloak endpoint behind it
   (`DELETE /realms/{realm}/sessions/{id}`) belongs to the realm, so a foreign session id would close
-  someone else's session.
+  someone else's session. Offline sessions go through the same check with `offline=true`.
+- **Offline sessions are a separate resource on purpose.** A token with `offline_access` opens no
+  regular session, survives `DELETE /sessions`, and disabling the user only blocks the refresh while
+  it lasts — re-enabling brings it back. Only closing the offline session revokes it, so taking
+  somebody out is three calls (`PATCH /enabled`, `DELETE /sessions`, `DELETE /offline-sessions`) and
+  that is documented rather than folded into one. Keycloak has no per-user offline session list:
+  the clients to ask come from the user's consents (`Offline Token` grants).
+- **A credential never carries its secret nor how it is stored**: Keycloak withholds `secretData`,
+  and `credentialData` (hash algorithm and parameters) is dropped in the mapper. Removing one is
+  audited with its type, which is why the service resolves it in the user's own list first.
 - The service account uses the realm `mto` (`mto-users-svc`), never the `master` realm.
 - Jackson 2 is on the classpath only for RESTEasy. The API is serialized with Jackson 3; do not add
   `spring-boot-jackson2`. The YAML/JAXB providers of the admin client are excluded on purpose.

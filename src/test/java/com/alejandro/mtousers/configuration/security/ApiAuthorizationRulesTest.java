@@ -123,6 +123,10 @@ class ApiAuthorizationRulesTest {
             mockMvc.perform(get(USERS + "/roles/clients")).andExpect(status().isUnauthorized());
             mockMvc.perform(get(USER + "/sessions")).andExpect(status().isUnauthorized());
             mockMvc.perform(delete(USER + "/sessions")).andExpect(status().isUnauthorized());
+            mockMvc.perform(get(USER + "/offline-sessions")).andExpect(status().isUnauthorized());
+            mockMvc.perform(delete(USER + "/offline-sessions")).andExpect(status().isUnauthorized());
+            mockMvc.perform(get(USER + "/credentials")).andExpect(status().isUnauthorized());
+            mockMvc.perform(delete(USER + "/credentials/abc")).andExpect(status().isUnauthorized());
         }
 
         @Test
@@ -158,6 +162,8 @@ class ApiAuthorizationRulesTest {
             mockMvc.perform(get(USERS + "/profiles/mto-users-admin/users").with(role(SecurityRoles.USERS_READ))).andExpect(status().isOk());
             mockMvc.perform(get(USERS + "/roles/clients/mto-stock-api/stock-read/users").with(role(SecurityRoles.USERS_READ))).andExpect(status().isOk());
             mockMvc.perform(get(USER + "/sessions").with(role(SecurityRoles.USERS_READ))).andExpect(status().isOk());
+            mockMvc.perform(get(USER + "/offline-sessions").with(role(SecurityRoles.USERS_READ))).andExpect(status().isOk());
+            mockMvc.perform(get(USER + "/credentials").with(role(SecurityRoles.USERS_READ))).andExpect(status().isOk());
         }
 
         @Test
@@ -187,6 +193,8 @@ class ApiAuthorizationRulesTest {
             mockMvc.perform(put(USER + "/profiles/mto-users-viewer").with(role(SecurityRoles.USERS_READ))).andExpect(status().isForbidden());
             mockMvc.perform(delete(USER + "/sessions").with(role(SecurityRoles.USERS_READ))).andExpect(status().isForbidden());
             mockMvc.perform(delete(USER + "/sessions/abc").with(role(SecurityRoles.USERS_READ))).andExpect(status().isForbidden());
+            mockMvc.perform(delete(USER + "/offline-sessions").with(role(SecurityRoles.USERS_READ))).andExpect(status().isForbidden());
+            mockMvc.perform(delete(USER + "/credentials/abc").with(role(SecurityRoles.USERS_READ))).andExpect(status().isForbidden());
         }
     }
 
@@ -212,6 +220,8 @@ class ApiAuthorizationRulesTest {
             mockMvc.perform(put(USER + "/profiles/mto-users-viewer").with(role(SecurityRoles.USERS_WRITE))).andExpect(status().isForbidden());
             mockMvc.perform(delete(USER + "/profiles/mto-users-viewer").with(role(SecurityRoles.USERS_WRITE))).andExpect(status().isForbidden());
             mockMvc.perform(delete(USER + "/sessions").with(role(SecurityRoles.USERS_WRITE))).andExpect(status().isForbidden());
+            mockMvc.perform(delete(USER + "/offline-sessions").with(role(SecurityRoles.USERS_WRITE))).andExpect(status().isForbidden());
+            mockMvc.perform(delete(USER + "/credentials/abc").with(role(SecurityRoles.USERS_WRITE))).andExpect(status().isForbidden());
         }
     }
 
@@ -260,10 +270,36 @@ class ApiAuthorizationRulesTest {
             mockMvc.perform(delete(USER + "/sessions").with(role(SecurityRoles.USERS_SESSIONS_WRITE))).andExpect(status().isNoContent());
             mockMvc.perform(delete(USER + "/sessions/abc").with(role(SecurityRoles.USERS_SESSIONS_WRITE))).andExpect(status().isNoContent());
 
+            // Las offline son sesiones igual: las cubre el mismo permiso y ninguno de los otros.
+            mockMvc.perform(delete(USER + "/offline-sessions").with(role(SecurityRoles.USERS_SESSIONS_WRITE))).andExpect(status().isNoContent());
+            mockMvc.perform(delete(USER + "/offline-sessions/abc").with(role(SecurityRoles.USERS_SESSIONS_WRITE))).andExpect(status().isNoContent());
+
             mockMvc.perform(delete(USER + "/sessions").with(role(SecurityRoles.USERS_DELETE))).andExpect(status().isForbidden());
+            mockMvc.perform(delete(USER + "/offline-sessions").with(role(SecurityRoles.USERS_DELETE))).andExpect(status().isForbidden());
             mockMvc.perform(get(USER + "/sessions").with(role(SecurityRoles.USERS_SESSIONS_WRITE))).andExpect(status().isForbidden());
             mockMvc.perform(delete(USER).with(role(SecurityRoles.USERS_SESSIONS_WRITE))).andExpect(status().isForbidden());
             mockMvc.perform(json(post(USERS), USER_JSON).with(role(SecurityRoles.USERS_SESSIONS_WRITE))).andExpect(status().isForbidden());
+            // Y no alcanza a las credenciales: quitar el segundo factor es otra cosa.
+            mockMvc.perform(delete(USER + "/credentials/abc").with(role(SecurityRoles.USERS_SESSIONS_WRITE))).andExpect(status().isForbidden());
+        }
+
+        /**
+         * Quitar una credencial puede ser quitarle a alguien el segundo factor, asi que no lo da ni
+         * el reset de contrasena —que deja entrar, pero con lo que el administrador fija— ni cerrar
+         * sesiones, y el permiso no abre ninguna otra puerta.
+         */
+        @Test
+        void removingCredentialsNeedsItsOwnRoleAndGrantsNothingElse() throws Exception {
+            mockMvc.perform(delete(USER + "/credentials/abc").with(role(SecurityRoles.USERS_CREDENTIALS_WRITE)))
+                    .andExpect(status().isNoContent());
+
+            mockMvc.perform(delete(USER + "/credentials/abc").with(role(SecurityRoles.USERS_PASSWORD_RESET))).andExpect(status().isForbidden());
+            mockMvc.perform(delete(USER + "/credentials/abc").with(role(SecurityRoles.USERS_DELETE))).andExpect(status().isForbidden());
+            mockMvc.perform(get(USER + "/credentials").with(role(SecurityRoles.USERS_CREDENTIALS_WRITE))).andExpect(status().isForbidden());
+            mockMvc.perform(delete(USER + "/sessions").with(role(SecurityRoles.USERS_CREDENTIALS_WRITE))).andExpect(status().isForbidden());
+            mockMvc.perform(delete(USER).with(role(SecurityRoles.USERS_CREDENTIALS_WRITE))).andExpect(status().isForbidden());
+            mockMvc.perform(json(post(USER + "/reset-password"), "{\"password\":\"Secreta.123\"}").with(role(SecurityRoles.USERS_CREDENTIALS_WRITE)))
+                    .andExpect(status().isForbidden());
         }
 
         /**

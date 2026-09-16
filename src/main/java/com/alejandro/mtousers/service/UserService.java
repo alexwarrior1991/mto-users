@@ -5,6 +5,7 @@ import com.alejandro.mtousers.dto.ExecuteActionsEmailRequest;
 import com.alejandro.mtousers.dto.PageResponse;
 import com.alejandro.mtousers.dto.ResetPasswordRequest;
 import com.alejandro.mtousers.dto.UpdateUserRequest;
+import com.alejandro.mtousers.dto.UserCredentialResponse;
 import com.alejandro.mtousers.dto.UserResponse;
 import com.alejandro.mtousers.dto.UserSearchCriteria;
 import com.alejandro.mtousers.dto.UserSessionResponse;
@@ -37,4 +38,21 @@ public interface UserService {
 
     /** Cierra una sesión concreta, comprobando antes que es de ese usuario. */
     void revokeSession(String userId, String sessionId);
+
+    /**
+     * Las sesiones offline del usuario, las de los tokens que sobreviven a cerrar la sesión normal.
+     */
+    List<UserSessionResponse> listOfflineSessions(String userId);
+
+    /** Cierra todas las sesiones offline del usuario. Idempotente. */
+    void revokeAllOfflineSessions(String userId);
+
+    /** Cierra una sesión offline del usuario. */
+    void revokeOfflineSession(String userId, String sessionId);
+
+    /** Las credenciales del usuario, sin secretos. */
+    List<UserCredentialResponse> listCredentials(String userId);
+
+    /** Quita una credencial del usuario: un segundo factor perdido, una contraseña vieja. */
+    void deleteCredential(String userId, String credentialId);
 }

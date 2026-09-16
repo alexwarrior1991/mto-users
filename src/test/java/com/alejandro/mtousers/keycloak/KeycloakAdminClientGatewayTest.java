@@ -3,6 +3,7 @@ package com.alejandro.mtousers.keycloak;
 import com.alejandro.mtousers.configuration.keycloak.KeycloakAdminProperties;
 import com.alejandro.mtousers.dto.UserSearchCriteria;
 import com.alejandro.mtousers.exception.ClientNotFoundException;
+import com.alejandro.mtousers.exception.CredentialNotFoundException;
 import com.alejandro.mtousers.exception.KeycloakAccessException;
 import com.alejandro.mtousers.exception.KeycloakRequestException;
 import com.alejandro.mtousers.exception.KeycloakUnavailableException;
@@ -373,17 +374,74 @@ class KeycloakAdminClientGatewayTest {
         gateway.logoutUser(USER_ID);
         verify(user).logout();
 
-        gateway.deleteSession("session-1");
+        gateway.deleteSession("session-1", false);
         verify(realm).deleteSession("session-1", false);
+    }
+
+    /**
+     * Keycloak no tiene «las sesiones offline de este usuario»: hay que preguntar cliente a
+     * cliente, y el indice de que clientes preguntar son los consentimientos, donde cada token
+     * offline deja una concesion con clave 'Offline Token'. Los mapas sin tipar que devuelve el
+     * admin client se traducen aqui y no salen del paquete.
+     */
+    @Test
+    void theClientsWithAnOfflineTokenComeFromTheConsentsAndTheRestIsIgnored() {
+        when(user.getConsents()).thenReturn(List.of(
+                Map.of("clientId", "mto-frontend", "additionalGrants", List.of(
+                        Map.of("client", "uuid-frontend", "key", "Offline Token"),
+                        Map.of("client", "uuid-frontend", "key", "Something Else"))),
+                Map.of("clientId", "mto-otro", "additionalGrants", List.of(
+                        Map.of("client", "uuid-otro", "key", "Offline Token"))),
+                Map.of("clientId", "mto-sin-offline", "grantedClientScopes", List.of("profile")),
+                Map.of("clientId", "mto-raro", "additionalGrants", "esto no es una lista")));
+
+        assertEquals(List.of("uuid-frontend", "uuid-otro"), gateway.findClientsWithOfflineTokens(USER_ID));
+
+        UserSessionRepresentation offline = new UserSessionRepresentation();
+        offline.setId("offline-1");
+        when(user.getOfflineSessions("uuid-frontend")).thenReturn(List.of(offline));
+        assertEquals("offline-1", gateway.listOfflineSessions(USER_ID, "uuid-frontend").getFirst().getId());
+
+        gateway.deleteSession("offline-1", true);
+        verify(realm).deleteSession("offline-1", true);
+    }
+
+    @Test
+    void credentialsAreReadAndRemovedThroughTheUser() {
+        CredentialRepresentation password = new CredentialRepresentation();
+        password.setId("cred-1");
+        password.setType(CredentialRepresentation.PASSWORD);
+        when(user.credentials()).thenReturn(List.of(password));
+
+        assertEquals("cred-1", gateway.listCredentials(USER_ID).getFirst().getId());
+
+        gateway.deleteCredential(USER_ID, "cred-1");
+        verify(user).removeCredential("cred-1");
+    }
+
+    @Test
+    void aCredentialThatIsNotThereIs404AndAMissingUserKeepsBeingAUserProblem() {
+        doThrow(new NotFoundException()).when(user).removeCredential("gone");
+        when(user.credentials()).thenThrow(new NotFoundException());
+        when(user.getConsents()).thenThrow(new NotFoundException());
+        when(user.getOfflineSessions("uuid-frontend")).thenThrow(new NotFoundException());
+
+        assertThrows(CredentialNotFoundException.class, () -> gateway.deleteCredential(USER_ID, "gone"));
+        assertThrows(UserNotFoundException.class, () -> gateway.listCredentials(USER_ID));
+        assertThrows(UserNotFoundException.class, () -> gateway.findClientsWithOfflineTokens(USER_ID));
+        assertThrows(UserNotFoundException.class, () -> gateway.listOfflineSessions(USER_ID, "uuid-frontend"));
     }
 
     @Test
     void aSessionThatIsNoLongerThereIs404AndAMissingUserKeepsBeingAUserProblem() {
         doThrow(new NotFoundException()).when(realm).deleteSession("gone", false);
+        doThrow(new NotFoundException()).when(realm).deleteSession("gone", true);
         when(user.getUserSessions()).thenThrow(new NotFoundException());
         doThrow(new NotFoundException()).when(user).logout();
 
-        assertThrows(SessionNotFoundException.class, () -> gateway.deleteSession("gone"));
+        assertThrows(SessionNotFoundException.class, () -> gateway.deleteSession("gone", false));
+        assertThrows(SessionNotFoundException.class, () -> gateway.deleteSession("gone", true),
+                "Una sesion offline que ya no esta es el mismo 404");
         assertThrows(UserNotFoundException.class, () -> gateway.listUserSessions(USER_ID));
         assertThrows(UserNotFoundException.class, () -> gateway.logoutUser(USER_ID));
     }

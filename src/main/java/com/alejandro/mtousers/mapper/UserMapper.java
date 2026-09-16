@@ -2,6 +2,7 @@ package com.alejandro.mtousers.mapper;
 
 import com.alejandro.mtousers.dto.CreateUserRequest;
 import com.alejandro.mtousers.dto.UpdateUserRequest;
+import com.alejandro.mtousers.dto.UserCredentialResponse;
 import com.alejandro.mtousers.dto.UserResponse;
 import com.alejandro.mtousers.dto.UserSessionResponse;
 import org.keycloak.representations.idm.CredentialRepresentation;
@@ -76,6 +77,19 @@ public interface UserMapper {
     default List<UserSessionResponse> toSessionResponses(List<UserSessionRepresentation> sessions) {
         return sessions == null ? List.of() : sessions.stream().map(this::toSessionResponse).toList();
     }
+
+    /**
+     * Una credencial, sin nada del secreto ni de cómo está guardado: {@code secretData} Keycloak no
+     * lo devuelve, y {@code credentialData} —el algoritmo de hash y sus parámetros— se queda aquí.
+     */
+    @BeanMapping(ignoreByDefault = true)
+    @Mapping(target = "id", source = "id")
+    @Mapping(target = "type", source = "type")
+    @Mapping(target = "userLabel", source = "userLabel")
+    @Mapping(target = "createdAt", source = "createdDate")
+    UserCredentialResponse toCredentialResponse(CredentialRepresentation credential);
+
+    List<UserCredentialResponse> toCredentialResponses(List<CredentialRepresentation> credentials);
 
     default Instant toInstant(Long epochMillis) {
         return epochMillis == null ? null : Instant.ofEpochMilli(epochMillis);

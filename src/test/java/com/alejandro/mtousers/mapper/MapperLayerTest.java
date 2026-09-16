@@ -5,6 +5,7 @@ import com.alejandro.mtousers.dto.CreateUserRequest;
 import com.alejandro.mtousers.dto.RequiredAction;
 import com.alejandro.mtousers.dto.UpdateUserRequest;
 import com.alejandro.mtousers.dto.UserResponse;
+import com.alejandro.mtousers.dto.UserCredentialResponse;
 import com.alejandro.mtousers.dto.UserRolesResponse;
 import com.alejandro.mtousers.dto.UserSessionResponse;
 import org.junit.jupiter.api.Test;
@@ -21,6 +22,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -186,6 +188,36 @@ class MapperLayerTest {
         assertNull(userMapper.toResponse(representation).createdAt());
         assertNull(userMapper.toInstant(null));
         assertEquals(Instant.ofEpochMilli(7L), userMapper.toInstant(7L));
+    }
+
+    /**
+     * De una credencial sale lo justo para identificarla. Keycloak no devuelve {@code secretData},
+     * pero si {@code credentialData} con el algoritmo de hash y sus parametros, y eso no tiene por
+     * que salir de aqui.
+     */
+    @Test
+    void aCredentialLosesEverythingAboutHowItIsStored() {
+        CredentialRepresentation credential = new CredentialRepresentation();
+        credential.setId("cred-1");
+        credential.setType("otp");
+        credential.setUserLabel("Movil de guardia");
+        credential.setCreatedDate(1_700_000_000_000L);
+        credential.setCredentialData("{\"algorithm\":\"argon2\",\"hashIterations\":5}");
+        credential.setSecretData("{\"value\":\"no-deberia-estar-aqui\"}");
+        credential.setValue("Secreta.123");
+
+        UserCredentialResponse response = userMapper.toCredentialResponse(credential);
+
+        assertEquals("cred-1", response.id());
+        assertEquals("otp", response.type());
+        assertEquals("Movil de guardia", response.userLabel());
+        assertEquals(Instant.ofEpochMilli(1_700_000_000_000L), response.createdAt());
+        assertFalse(response.toString().contains("argon2"), "Ni el algoritmo ni sus parametros");
+        assertFalse(response.toString().contains("Secreta.123"));
+        assertFalse(response.toString().contains("no-deberia-estar-aqui"));
+
+        assertEquals(2, userMapper.toCredentialResponses(List.of(credential, credential)).size());
+        assertNull(userMapper.toCredentialResponses(null));
     }
 
     private static UserSessionRepresentation sessionWithoutClients() {

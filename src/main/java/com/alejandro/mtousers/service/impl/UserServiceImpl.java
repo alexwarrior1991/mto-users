@@ -6,9 +6,11 @@ import com.alejandro.mtousers.dto.PageResponse;
 import com.alejandro.mtousers.dto.RequiredAction;
 import com.alejandro.mtousers.dto.ResetPasswordRequest;
 import com.alejandro.mtousers.dto.UpdateUserRequest;
+import com.alejandro.mtousers.dto.UserCredentialResponse;
 import com.alejandro.mtousers.dto.UserResponse;
 import com.alejandro.mtousers.dto.UserSearchCriteria;
 import com.alejandro.mtousers.dto.UserSessionResponse;
+import com.alejandro.mtousers.exception.CredentialNotFoundException;
 import com.alejandro.mtousers.exception.InvalidSearchException;
 import com.alejandro.mtousers.exception.SessionNotFoundException;
 import com.alejandro.mtousers.keycloak.KeycloakAdminGateway;
@@ -16,6 +18,7 @@ import com.alejandro.mtousers.mapper.UserMapper;
 import com.alejandro.mtousers.service.AdminAuditLog;
 import com.alejandro.mtousers.service.AdminAuditLog.AdminAction;
 import com.alejandro.mtousers.service.UserService;
+import org.keycloak.representations.idm.CredentialRepresentation;
 import org.keycloak.representations.idm.UserRepresentation;
 import org.keycloak.representations.idm.UserSessionRepresentation;
 import org.springframework.stereotype.Service;
@@ -138,8 +141,70 @@ class UserServiceImpl implements UserService {
         if (!belongsToUser) {
             throw new SessionNotFoundException(sessionId);
         }
-        keycloak.deleteSession(sessionId);
+        keycloak.deleteSession(sessionId, false);
         audit.record(AdminAction.SESSION_REVOKED, userId, "session=" + sessionId);
+    }
+
+    /**
+     * Las sesiones offline no aparecen en {@link #listSessions(String)} ni las cierra
+     * {@link #revokeAllSessions(String)}: son las de los tokens con {@code offline_access}, que
+     * estan hechos para sobrevivir al cierre de sesion. Un usuario deshabilitado con un token
+     * offline vivo sigue pudiendo refrescarlo, asi que cerrarlas es su propia operacion.
+     *
+     * <p>Keycloak las consulta cliente a cliente, y el indice de que clientes preguntar son los
+     * consentimientos del usuario.</p>
+     */
+    @Override
+    public List<UserSessionResponse> listOfflineSessions(String userId) {
+        return userMapper.toSessionResponses(offlineSessions(userId));
+    }
+
+    @Override
+    public void revokeAllOfflineSessions(String userId) {
+        List<String> sessionIds = offlineSessions(userId).stream().map(UserSessionRepresentation::getId).toList();
+        sessionIds.forEach(sessionId -> keycloak.deleteSession(sessionId, true));
+        audit.record(AdminAction.ALL_OFFLINE_SESSIONS_REVOKED, userId, "sessions=" + sessionIds.size());
+    }
+
+    /** Misma comprobacion que en una sesion normal, y por el mismo motivo. */
+    @Override
+    public void revokeOfflineSession(String userId, String sessionId) {
+        boolean belongsToUser = offlineSessions(userId).stream()
+                .map(UserSessionRepresentation::getId)
+                .anyMatch(sessionId::equals);
+        if (!belongsToUser) {
+            throw new SessionNotFoundException(sessionId);
+        }
+        keycloak.deleteSession(sessionId, true);
+        audit.record(AdminAction.OFFLINE_SESSION_REVOKED, userId, "session=" + sessionId);
+    }
+
+    @Override
+    public List<UserCredentialResponse> listCredentials(String userId) {
+        return userMapper.toCredentialResponses(keycloak.listCredentials(userId));
+    }
+
+    /**
+     * Se busca primero entre las del usuario para poder decir en la auditoria <em>que</em> se ha
+     * quitado —quitar un OTP no es lo mismo que quitar una contrasena vieja— y para que un id que
+     * no exista sea un 404 de credencial y no de usuario.
+     */
+    @Override
+    public void deleteCredential(String userId, String credentialId) {
+        String type = keycloak.listCredentials(userId).stream()
+                .filter(credential -> credentialId.equals(credential.getId()))
+                .map(CredentialRepresentation::getType)
+                .findFirst()
+                .orElseThrow(() -> new CredentialNotFoundException(credentialId));
+
+        keycloak.deleteCredential(userId, credentialId);
+        audit.record(AdminAction.CREDENTIAL_DELETED, userId, "credential=" + credentialId + " type=" + type);
+    }
+
+    private List<UserSessionRepresentation> offlineSessions(String userId) {
+        return keycloak.findClientsWithOfflineTokens(userId).stream()
+                .flatMap(clientUuid -> keycloak.listOfflineSessions(userId, clientUuid).stream())
+                .toList();
     }
 
     private static String changedFields(UpdateUserRequest request) {

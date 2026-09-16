@@ -119,6 +119,11 @@ public class SecurityConfiguration {
                     // caeria en el anyRequest().authenticated() del final y bastaria un token.
                     authorize.requestMatchers(HttpMethod.DELETE, API + "/*/sessions").hasRole(SecurityRoles.USERS_SESSIONS_WRITE);
                     authorize.requestMatchers(HttpMethod.DELETE, API + "/*/sessions/**").hasRole(SecurityRoles.USERS_SESSIONS_WRITE);
+                    // Las offline son sesiones igual, y cerrarlas pide lo mismo.
+                    authorize.requestMatchers(HttpMethod.DELETE, API + "/*/offline-sessions").hasRole(SecurityRoles.USERS_SESSIONS_WRITE);
+                    authorize.requestMatchers(HttpMethod.DELETE, API + "/*/offline-sessions/**").hasRole(SecurityRoles.USERS_SESSIONS_WRITE);
+                    // Quitar una credencial puede ser quitar el segundo factor: permiso propio.
+                    authorize.requestMatchers(HttpMethod.DELETE, API + "/*/credentials/**").hasRole(SecurityRoles.USERS_CREDENTIALS_WRITE);
                     authorize.requestMatchers(HttpMethod.DELETE, API + "/*").hasRole(SecurityRoles.USERS_DELETE);
 
                     authorize.requestMatchers(HttpMethod.GET, API + "/**").hasRole(SecurityRoles.USERS_READ);
