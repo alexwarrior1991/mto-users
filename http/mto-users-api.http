@@ -1,0 +1,116 @@
+### Token de un usuario de desarrollo (mto-platform, apply-partials.sh con usuarios): usuarios.responsable / local
+# @name token
+POST http://auth.mto.local:8082/realms/mto/protocol/openid-connect/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=password&client_id=mto-frontend&username=usuarios.responsable&password=local
+
+> {% client.global.set("token", response.body.access_token); %}
+
+### Buscar usuarios (directo al servicio; por el gateway: http://localhost:8090/api/users?search=...)
+GET http://localhost:8084/api/v1/users?search=almacen&enabled=true&first=0&max=20
+Authorization: Bearer {{token}}
+X-Correlation-Id: http-file-001
+
+### Crear usuario con contrasena temporal
+# @name createUser
+POST http://localhost:8084/api/v1/users
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "username": "ana.nueva",
+  "firstName": "Ana",
+  "lastName": "Nueva",
+  "email": "ana.nueva@mto.local",
+  "emailVerified": true,
+  "temporaryPassword": "Cambiame.123",
+  "requiredActions": ["UPDATE_PASSWORD"]
+}
+
+> {% client.global.set("userId", response.body.id); %}
+
+### Detalle
+GET http://localhost:8084/api/v1/users/{{userId}}
+Authorization: Bearer {{token}}
+
+### Modificar datos basicos (lo que no viene se conserva)
+PUT http://localhost:8084/api/v1/users/{{userId}}
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "lastName": "Nueva Probada",
+  "attributes": {"departamento": ["operaciones"]}
+}
+
+### Deshabilitar
+PATCH http://localhost:8084/api/v1/users/{{userId}}/enabled
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"enabled": false}
+
+### Contrasena temporal
+POST http://localhost:8084/api/v1/users/{{userId}}/reset-password
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"password": "Otra.Temporal.456", "temporary": true}
+
+### Correo con acciones requeridas (necesita SMTP en el realm; sin el, 502)
+POST http://localhost:8084/api/v1/users/{{userId}}/execute-actions-email
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"actions": ["UPDATE_PASSWORD", "VERIFY_EMAIL"], "lifespanSeconds": 3600}
+
+### Clientes cuyos roles se pueden asignar
+GET http://localhost:8084/api/v1/users/roles/clients
+Authorization: Bearer {{token}}
+
+### Roles de un cliente
+GET http://localhost:8084/api/v1/users/roles/clients/mto-stock-api
+Authorization: Bearer {{token}}
+
+### Roles asignados directamente al usuario
+GET http://localhost:8084/api/v1/users/{{userId}}/roles
+Authorization: Bearer {{token}}
+
+### Asignar roles de cliente
+PUT http://localhost:8084/api/v1/users/{{userId}}/roles/clients/mto-stock-api
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"roles": ["stock-read", "stock-write"]}
+
+### Quitar roles de cliente (los nombres van en el cuerpo)
+DELETE http://localhost:8084/api/v1/users/{{userId}}/roles/clients/mto-stock-api
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"roles": ["stock-write"]}
+
+### Perfiles disponibles (roles compuestos de realm mto-*)
+GET http://localhost:8084/api/v1/users/profiles
+Authorization: Bearer {{token}}
+
+### Que concede un perfil
+GET http://localhost:8084/api/v1/users/profiles/mto-maintenance-manager
+Authorization: Bearer {{token}}
+
+### Asignar un perfil
+PUT http://localhost:8084/api/v1/users/{{userId}}/profiles/mto-warehouse-viewer
+Authorization: Bearer {{token}}
+
+### Perfiles del usuario
+GET http://localhost:8084/api/v1/users/{{userId}}/profiles
+Authorization: Bearer {{token}}
+
+### Quitar un perfil
+DELETE http://localhost:8084/api/v1/users/{{userId}}/profiles/mto-warehouse-viewer
+Authorization: Bearer {{token}}
+
+### Borrar
+DELETE http://localhost:8084/api/v1/users/{{userId}}
+Authorization: Bearer {{token}}

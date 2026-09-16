@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <springProperty scope="context" name="applicationName" source="spring.application.name" defaultValue="mto-users"/>
+    <springProperty scope="context" name="rootLevel" source="logging.level.root" defaultValue="INFO"/>
+    <springProperty scope="context" name="applicationLevel" source="logging.level.com.alejandro.mtousers" defaultValue="INFO"/>
+
+    <!-- La correlacion va en cada linea: [aplicacion,traceId,spanId,correlationId]. El correlationId
+         es el de la cabecera X-Correlation-Id (lo pone CorrelationIdFilter en el MDC) y es lo que
+         permite seguir una operacion administrativa desde el gateway hasta la linea de auditoria. -->
+    <property name="CORRELATION" value="[${applicationName},%X{traceId:-},%X{spanId:-},%X{correlationId:-}]"/>
+    <property name="DEV_PATTERN" value="%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level ${CORRELATION} [%thread] %logger{36} - %msg%n"/>
+    <property name="PROD_PATTERN" value="%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level app=${applicationName} trace=%X{traceId:-} span=%X{spanId:-} correlation=%X{correlationId:-} thread=%thread logger=%logger{36} - %msg%n"/>
+
+    <springProfile name="dev,test">
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <pattern>${DEV_PATTERN}</pattern>
+            </encoder>
+        </appender>
+
+        <logger name="com.alejandro.mtousers" level="${applicationLevel}"/>
+        <!-- La auditoria siempre sale, sea cual sea el nivel de la aplicacion. -->
+        <logger name="com.alejandro.mtousers.audit" level="INFO"/>
+        <root level="${rootLevel}">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+    </springProfile>
+
+    <springProfile name="prod">
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <pattern>${PROD_PATTERN}</pattern>
+            </encoder>
+        </appender>
+
+        <appender name="ASYNC_CONSOLE" class="ch.qos.logback.classic.AsyncAppender">
+            <queueSize>512</queueSize>
+            <neverBlock>true</neverBlock>
+            <appender-ref ref="CONSOLE"/>
+        </appender>
+
+        <logger name="com.alejandro.mtousers" level="${applicationLevel}"/>
+        <logger name="com.alejandro.mtousers.audit" level="INFO"/>
+        <root level="${rootLevel}">
+            <appender-ref ref="ASYNC_CONSOLE"/>
+        </root>
+    </springProfile>
+</configuration>

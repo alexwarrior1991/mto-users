@@ -1,4 +1,6 @@
 HELP.md
+# Credenciales locales: copiese .env.example a .env y editese; nunca se versiona.
+.env
 target/
 .mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/

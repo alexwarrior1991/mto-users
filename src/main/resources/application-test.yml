@@ -1,0 +1,37 @@
+server:
+  port: ${SERVER_PORT:0}
+
+spring:
+  config:
+    activate:
+      on-profile: test
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${KEYCLOAK_ISSUER_URI:http://localhost:8082/realms/mto}
+
+app:
+  security:
+    # Los tests inyectan la autenticacion ya resuelta, asi que no hay emisor que ponga la audiencia
+    # en el token. Se desactiva aqui y no en el codigo para que el interruptor siga siendo
+    # configuracion.
+    audience-validation-enabled: ${KEYCLOAK_AUDIENCE_VALIDATION_ENABLED:false}
+    expose-api-docs: ${APP_SECURITY_EXPOSE_API_DOCS:true}
+  keycloak:
+    # Nadie escucha aqui: los tests no llaman a Keycloak (el gateway se prueba con dobles y el IT
+    # levanta su propio contenedor y sobreescribe esto).
+    auth-server-url: ${KEYCLOAK_AUTH_SERVER_URL:http://localhost:8082}
+    admin-client-secret: ${KEYCLOAK_ADMIN_CLIENT_SECRET:test-secret}
+
+management:
+  endpoint:
+    health:
+      show-details: ${MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS:always}
+  tracing:
+    enabled: false
+
+logging:
+  level:
+    root: ${LOGGING_LEVEL_ROOT:WARN}
+    com.alejandro.mtousers: ${LOGGING_LEVEL_APP:INFO}

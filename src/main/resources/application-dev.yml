@@ -1,0 +1,30 @@
+server:
+  port: ${SERVER_PORT:8084}
+
+spring:
+  config:
+    activate:
+      on-profile: dev
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${KEYCLOAK_ISSUER_URI:http://auth.mto.local:8082/realms/mto}
+
+app:
+  security:
+    # Entorno de desarrollo: la documentacion interactiva es la forma habitual de probar la API.
+    expose-api-docs: ${APP_SECURITY_EXPOSE_API_DOCS:true}
+  keycloak:
+    # El secreto que fija mto-users-dev.json para la cuenta de servicio en el realm local.
+    admin-client-secret: ${KEYCLOAK_ADMIN_CLIENT_SECRET:mto-users-svc-secret}
+
+management:
+  endpoint:
+    health:
+      show-details: ${MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS:always}
+
+logging:
+  level:
+    root: ${LOGGING_LEVEL_ROOT:INFO}
+    com.alejandro.mtousers: ${LOGGING_LEVEL_APP:DEBUG}

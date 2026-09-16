@@ -1,0 +1,139 @@
+{
+  "realm": "mto",
+  "enabled": true,
+  "sslRequired": "none",
+  "accessTokenLifespan": 300,
+  "roles": {
+    "realm": [
+      {
+        "name": "plain-role",
+        "description": "Rol de realm SIN el prefijo de perfil: no debe aparecer como perfil ni poder asignarse desde la API."
+      },
+      {
+        "name": "mto-users-viewer",
+        "description": "Consulta de usuarios, roles y perfiles",
+        "composite": true,
+        "composites": {
+          "client": {
+            "mto-users-api": ["users-read"]
+          }
+        }
+      },
+      {
+        "name": "mto-users-manager",
+        "description": "Gestion de usuarios: alta, modificacion, roles, perfiles y contrasenas",
+        "composite": true,
+        "composites": {
+          "client": {
+            "mto-users-api": ["users-read", "users-write", "users-roles-write", "users-password-reset", "users-profiles-write"]
+          }
+        }
+      },
+      {
+        "name": "mto-users-admin",
+        "description": "Ademas, borrado de usuarios",
+        "composite": true,
+        "composites": {
+          "client": {
+            "mto-users-api": ["users-read", "users-write", "users-delete", "users-roles-write", "users-password-reset", "users-profiles-write"]
+          }
+        }
+      },
+      {
+        "name": "mto-warehouse-viewer",
+        "description": "Perfil de otro servicio: comprueba que un perfil cruza clientes",
+        "composite": true,
+        "composites": {
+          "client": {
+            "mto-stock-api": ["stock-read"]
+          }
+        }
+      }
+    ],
+    "client": {
+      "mto-users-api": [
+        {"name": "users-read"},
+        {"name": "users-write"},
+        {"name": "users-delete"},
+        {"name": "users-roles-write"},
+        {"name": "users-password-reset"},
+        {"name": "users-profiles-write"},
+        {"name": "ops-metrics"},
+        {"name": "ops-write"}
+      ],
+      "mto-stock-api": [
+        {"name": "stock-read"},
+        {"name": "stock-write"}
+      ]
+    }
+  },
+  "clients": [
+    {
+      "clientId": "mto-users-api",
+      "enabled": true,
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "secret": "no-se-usa-solo-declara-roles-y-audiencia"
+    },
+    {
+      "clientId": "mto-stock-api",
+      "enabled": true,
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "secret": "no-se-usa-solo-declara-roles-y-audiencia"
+    },
+    {
+      "clientId": "mto-users-svc",
+      "enabled": true,
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "secret": "mto-users-svc-secret"
+    },
+    {
+      "clientId": "mto-test-frontend",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "protocolMappers": [
+        {
+          "name": "audiencia-mto-users-api",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "mto-users-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "service-account-mto-users-svc",
+      "enabled": true,
+      "serviceAccountClientId": "mto-users-svc",
+      "clientRoles": {
+        "realm-management": ["view-users", "query-users", "manage-users", "view-clients", "query-clients", "view-realm"]
+      }
+    },
+    {
+      "username": "existente",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Eva",
+      "lastName": "Existente",
+      "email": "existente@mto.local",
+      "requiredActions": [],
+      "credentials": [{"type": "password", "value": "local", "temporary": false}],
+      "realmRoles": ["mto-users-viewer"]
+    }
+  ]
+}

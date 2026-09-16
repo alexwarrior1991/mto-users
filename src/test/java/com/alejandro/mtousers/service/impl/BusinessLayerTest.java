@@ -1,0 +1,362 @@
+package com.alejandro.mtousers.service.impl;
+
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import com.alejandro.mtousers.configuration.keycloak.KeycloakAdminProperties;
+import com.alejandro.mtousers.configuration.profiles.ProfileProperties;
+import com.alejandro.mtousers.configuration.security.CurrentUserService;
+import com.alejandro.mtousers.dto.ClientRoleAssignment;
+import com.alejandro.mtousers.dto.CreateUserRequest;
+import com.alejandro.mtousers.dto.ExecuteActionsEmailRequest;
+import com.alejandro.mtousers.dto.PageResponse;
+import com.alejandro.mtousers.dto.ProfileResponse;
+import com.alejandro.mtousers.dto.ProfileSummaryResponse;
+import com.alejandro.mtousers.dto.RequiredAction;
+import com.alejandro.mtousers.dto.ResetPasswordRequest;
+import com.alejandro.mtousers.dto.RoleNamesRequest;
+import com.alejandro.mtousers.dto.UpdateUserRequest;
+import com.alejandro.mtousers.dto.UserResponse;
+import com.alejandro.mtousers.dto.UserRolesResponse;
+import com.alejandro.mtousers.dto.UserSearchCriteria;
+import com.alejandro.mtousers.exception.ProfileNotFoundException;
+import com.alejandro.mtousers.exception.ProtectedClientException;
+import com.alejandro.mtousers.exception.RoleNotFoundException;
+import com.alejandro.mtousers.keycloak.KeycloakAdminGateway;
+import com.alejandro.mtousers.mapper.ProfileMapper;
+import com.alejandro.mtousers.mapper.RoleMapper;
+import com.alejandro.mtousers.mapper.UserMapper;
+import com.alejandro.mtousers.service.AdminAuditLog;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.keycloak.representations.idm.ClientMappingsRepresentation;
+import org.keycloak.representations.idm.ClientRepresentation;
+import org.keycloak.representations.idm.MappingsRepresentation;
+import org.keycloak.representations.idm.RoleRepresentation;
+import org.keycloak.representations.idm.UserRepresentation;
+import org.mapstruct.factory.Mappers;
+import org.mockito.ArgumentCaptor;
+import org.slf4j.LoggerFactory;
+
+import java.time.Duration;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+/**
+ * Los tres servicios con la puerta a Keycloak sustituida por un doble y los mappers reales. La
+ * auditoría se comprueba leyendo lo que el logger de auditoría escribió.
+ */
+class BusinessLayerTest {
+
+    private static final String USER_ID = "2f1c9d1e-0000-4000-8000-000000000001";
+
+    private final KeycloakAdminGateway keycloak = mock(KeycloakAdminGateway.class);
+    private final AdminAuditLog audit = new AdminAuditLog(new CurrentUserService());
+    private final ListAppender<ILoggingEvent> auditLines = new ListAppender<>();
+
+    private final UserServiceImpl userService = new UserServiceImpl(keycloak, Mappers.getMapper(UserMapper.class), audit);
+    private final RoleServiceImpl roleService = new RoleServiceImpl(keycloak, keycloakProperties(), Mappers.getMapper(RoleMapper.class), audit);
+    private final ProfileServiceImpl profileService = new ProfileServiceImpl(keycloak,
+            new ProfileProperties("mto-", List.of("mto-internal")), Mappers.getMapper(ProfileMapper.class), audit);
+
+    @BeforeEach
+    void captureAuditLog() {
+        auditLines.start();
+        ((Logger) LoggerFactory.getLogger("com.alejandro.mtousers.audit")).addAppender(auditLines);
+    }
+
+    @AfterEach
+    void releaseAuditLog() {
+        ((Logger) LoggerFactory.getLogger("com.alejandro.mtousers.audit")).detachAppender(auditLines);
+    }
+
+    // --- Usuarios ---------------------------------------------------------------------------------
+
+    @Test
+    void searchReturnsThePageWithTheTotalFromCount() {
+        UserSearchCriteria criteria = new UserSearchCriteria("ana", null, null, true, null, 0, 20);
+        when(keycloak.searchUsers(criteria)).thenReturn(List.of(user("ana.uno"), user("ana.dos")));
+        when(keycloak.countUsers(criteria)).thenReturn(42);
+
+        PageResponse<UserResponse> page = userService.search(criteria);
+
+        assertEquals(2, page.content().size());
+        assertEquals("ana.uno", page.content().getFirst().username());
+        assertEquals(42, page.total());
+        assertEquals(20, page.max());
+    }
+
+    @Test
+    void createDefaultsToEnabledCarriesTheTemporaryPasswordAsCredentialAndAuditsWithoutIt() {
+        when(keycloak.createUser(any())).thenReturn(USER_ID);
+        when(keycloak.findUser(USER_ID)).thenReturn(user("ana.nueva"));
+
+        UserResponse created = userService.create(new CreateUserRequest("ana.nueva", "Ana", "Nueva", "ana@mto.local",
+                null, null, Map.of("dept", List.of("ops")), List.of(RequiredAction.UPDATE_PASSWORD), "Secreta.123"));
+
+        ArgumentCaptor<UserRepresentation> sent = ArgumentCaptor.forClass(UserRepresentation.class);
+        verify(keycloak).createUser(sent.capture());
+        assertEquals(Boolean.TRUE, sent.getValue().isEnabled(), "Keycloak crea deshabilitado por defecto; un alta se quiere activa");
+        assertEquals("ana.nueva", sent.getValue().getUsername());
+        assertEquals(List.of("UPDATE_PASSWORD"), sent.getValue().getRequiredActions());
+        assertEquals("Secreta.123", sent.getValue().getCredentials().getFirst().getValue());
+        assertEquals(Boolean.TRUE, sent.getValue().getCredentials().getFirst().isTemporary());
+        assertEquals("ana.nueva", created.username());
+
+        String line = onlyAuditLine();
+        assertTrue(line.contains("action=USER_CREATED"));
+        assertTrue(line.contains("targetUserId=" + USER_ID));
+        assertTrue(line.contains("temporaryPassword=true"));
+        assertFalse(line.contains("Secreta.123"), "La contraseña no puede aparecer en la auditoría");
+    }
+
+    @Test
+    void createRespectsAnExplicitDisabledFlag() {
+        when(keycloak.createUser(any())).thenReturn(USER_ID);
+        when(keycloak.findUser(USER_ID)).thenReturn(user("ana.nueva"));
+
+        userService.create(new CreateUserRequest("ana.nueva", null, null, null, null, false, null, null, null));
+
+        ArgumentCaptor<UserRepresentation> sent = ArgumentCaptor.forClass(UserRepresentation.class);
+        verify(keycloak).createUser(sent.capture());
+        assertEquals(Boolean.FALSE, sent.getValue().isEnabled());
+        assertEquals(null, sent.getValue().getCredentials());
+    }
+
+    @Test
+    void updateReadsMergesAndWritesTheWholeRepresentation() {
+        UserRepresentation existing = user("ana.uno");
+        existing.setFirstName("Ana");
+        existing.setLastName("Uno");
+        existing.setEmail("ana@mto.local");
+        existing.setAttributes(Map.of("dept", List.of("ops")));
+        when(keycloak.findUser(USER_ID)).thenReturn(existing);
+
+        userService.update(USER_ID, new UpdateUserRequest(null, "Dos", null, true, null));
+
+        ArgumentCaptor<UserRepresentation> sent = ArgumentCaptor.forClass(UserRepresentation.class);
+        verify(keycloak).updateUser(org.mockito.ArgumentMatchers.eq(USER_ID), sent.capture());
+        assertEquals("Ana", sent.getValue().getFirstName(), "Lo que no viene se conserva");
+        assertEquals("Dos", sent.getValue().getLastName());
+        assertEquals("ana@mto.local", sent.getValue().getEmail());
+        assertEquals(Boolean.TRUE, sent.getValue().isEmailVerified());
+        assertEquals(List.of("ops"), sent.getValue().getAttributes().get("dept"));
+        assertTrue(onlyAuditLine().contains("fields=lastName emailVerified"));
+    }
+
+    @Test
+    void enablingAndDisablingOnlyTouchTheFlag() {
+        UserRepresentation existing = user("ana.uno");
+        existing.setEnabled(true);
+        when(keycloak.findUser(USER_ID)).thenReturn(existing);
+
+        userService.setEnabled(USER_ID, false);
+
+        ArgumentCaptor<UserRepresentation> sent = ArgumentCaptor.forClass(UserRepresentation.class);
+        verify(keycloak).updateUser(org.mockito.ArgumentMatchers.eq(USER_ID), sent.capture());
+        assertEquals(Boolean.FALSE, sent.getValue().isEnabled());
+        assertTrue(onlyAuditLine().contains("action=USER_DISABLED"));
+    }
+
+    @Test
+    void resetPasswordIsTemporaryByDefaultAndNeverLogged() {
+        userService.resetPassword(USER_ID, new ResetPasswordRequest("Secreta.123", null));
+
+        verify(keycloak).resetPassword(USER_ID, "Secreta.123", true);
+        String line = onlyAuditLine();
+        assertTrue(line.contains("action=PASSWORD_RESET"));
+        assertTrue(line.contains("temporary=true"));
+        assertFalse(line.contains("Secreta.123"));
+    }
+
+    @Test
+    void actionsEmailSendsTheActionNames() {
+        userService.executeActionsEmail(USER_ID, new ExecuteActionsEmailRequest(
+                List.of(RequiredAction.UPDATE_PASSWORD, RequiredAction.VERIFY_EMAIL), 600, "mto-frontend", "http://localhost:4200"));
+
+        verify(keycloak).executeActionsEmail(USER_ID, List.of("UPDATE_PASSWORD", "VERIFY_EMAIL"), 600, "mto-frontend", "http://localhost:4200");
+        assertTrue(onlyAuditLine().contains("actions=[UPDATE_PASSWORD, VERIFY_EMAIL]"));
+    }
+
+    @Test
+    void deleteAudits() {
+        userService.delete(USER_ID);
+
+        verify(keycloak).deleteUser(USER_ID);
+        assertTrue(onlyAuditLine().contains("action=USER_DELETED actor=unknown"));
+    }
+
+    // --- Roles ------------------------------------------------------------------------------------
+
+    @Test
+    void protectedClientsAreNeitherListedNorReadable() {
+        when(keycloak.listClients()).thenReturn(List.of(client("u2", "mto-stock-api"), client("u1", "realm-management"), client("u3", "mto-configuration-api")));
+
+        assertEquals(List.of("mto-configuration-api", "mto-stock-api"),
+                roleService.listClients().stream().map(client -> client.clientId()).toList());
+        assertThrows(ProtectedClientException.class, () -> roleService.listClientRoles("realm-management"));
+        assertThrows(ProtectedClientException.class,
+                () -> roleService.addClientRoles(USER_ID, "realm-management", new RoleNamesRequest(List.of("realm-admin"))));
+        verify(keycloak, never()).addClientRoles(anyString(), anyString(), anyList());
+    }
+
+    @Test
+    void addingRolesResolvesTheirIdsAndRejectsUnknownNamesAsAWhole() {
+        when(keycloak.findClient("mto-stock-api")).thenReturn(client("uuid-stock", "mto-stock-api"));
+        when(keycloak.listClientRoles("uuid-stock")).thenReturn(List.of(role("r1", "stock-read"), role("r2", "stock-write")));
+
+        RoleNotFoundException missing = assertThrows(RoleNotFoundException.class,
+                () -> roleService.addClientRoles(USER_ID, "mto-stock-api", new RoleNamesRequest(List.of("stock-read", "stock-fly", "stock-swim"))));
+        assertTrue(missing.getMessage().contains("stock-fly, stock-swim"));
+        verify(keycloak, never()).addClientRoles(anyString(), anyString(), anyList());
+
+        MappingsRepresentation after = new MappingsRepresentation();
+        after.setClientMappings(Map.of("mto-stock-api", clientMappings("mto-stock-api", "stock-write", "stock-read")));
+        when(keycloak.getUserRoleMappings(USER_ID)).thenReturn(after);
+
+        UserRolesResponse response = roleService.addClientRoles(USER_ID, "mto-stock-api", new RoleNamesRequest(List.of("stock-write", "stock-write")));
+
+        ArgumentCaptor<List<RoleRepresentation>> sent = ArgumentCaptor.captor();
+        verify(keycloak).addClientRoles(org.mockito.ArgumentMatchers.eq(USER_ID), org.mockito.ArgumentMatchers.eq("uuid-stock"), sent.capture());
+        assertEquals(List.of("r2"), sent.getValue().stream().map(RoleRepresentation::getId).toList(), "Sin duplicados y con el id que Keycloak necesita");
+        assertEquals(List.of(new ClientRoleAssignment("mto-stock-api", List.of("stock-read", "stock-write"))), response.clientRoles());
+        assertTrue(onlyAuditLine().contains("action=CLIENT_ROLES_ADDED"));
+        assertTrue(onlyAuditLine().contains("client=mto-stock-api roles=[stock-write]"));
+    }
+
+    @Test
+    void userRolesHideProtectedClientsAndKeepRealmRoles() {
+        MappingsRepresentation mappings = new MappingsRepresentation();
+        mappings.setRealmMappings(List.of(role("p1", "mto-users-viewer"), role("p0", "default-roles-mto")));
+        mappings.setClientMappings(Map.of(
+                "realm-management", clientMappings("realm-management", "view-users"),
+                "mto-users-api", clientMappings("mto-users-api", "users-write", "users-read")));
+        when(keycloak.getUserRoleMappings(USER_ID)).thenReturn(mappings);
+
+        UserRolesResponse roles = roleService.getUserRoles(USER_ID);
+
+        assertEquals(List.of("default-roles-mto", "mto-users-viewer"), roles.realmRoles());
+        assertEquals(List.of(new ClientRoleAssignment("mto-users-api", List.of("users-read", "users-write"))), roles.clientRoles());
+    }
+
+    // --- Perfiles ---------------------------------------------------------------------------------
+
+    @Test
+    void profilesAreTheRealmRolesWithThePrefixMinusTheExcludedOnes() {
+        when(keycloak.listRealmRoles()).thenReturn(List.of(role("a", "mto-warehouse-admin"), role("b", "default-roles-mto"),
+                role("c", "mto-internal"), role("d", "mto-admin"), role("e", "offline_access")));
+
+        assertEquals(List.of("mto-admin", "mto-warehouse-admin"),
+                profileService.listProfiles().stream().map(ProfileSummaryResponse::name).toList());
+    }
+
+    @Test
+    void aProfileShowsItsClientRolesGroupedByClientIdAndItsNestedRealmRoles() {
+        RoleRepresentation profile = role("p", "mto-ops");
+        profile.setDescription("Explotacion");
+        when(keycloak.findRealmRole("mto-ops")).thenReturn(profile);
+        when(keycloak.getRealmRoleComposites("mto-ops")).thenReturn(Set.of(
+                clientRole("uuid-stock", "stock-read"), clientRole("uuid-stock", "ops-metrics"),
+                clientRole("uuid-users", "ops-metrics"), role("n", "mto-viewer")));
+        when(keycloak.listClients()).thenReturn(List.of(client("uuid-stock", "mto-stock-api"), client("uuid-users", "mto-users-api")));
+
+        ProfileResponse response = profileService.getProfile("mto-ops");
+
+        assertEquals("Explotacion", response.description());
+        assertEquals(List.of(
+                new ClientRoleAssignment("mto-stock-api", List.of("ops-metrics", "stock-read")),
+                new ClientRoleAssignment("mto-users-api", List.of("ops-metrics"))), response.clientRoles());
+        assertEquals(List.of("mto-viewer"), response.realmRoles());
+    }
+
+    @Test
+    void aRealmRoleThatIsNotAProfileDoesNotExistForThisApi() {
+        assertThrows(ProfileNotFoundException.class, () -> profileService.getProfile("default-roles-mto"));
+        assertThrows(ProfileNotFoundException.class, () -> profileService.assignProfile(USER_ID, "offline_access"));
+        assertThrows(ProfileNotFoundException.class, () -> profileService.assignProfile(USER_ID, "mto-internal"));
+        verify(keycloak, never()).findRealmRole(anyString());
+        verify(keycloak, never()).addRealmRoles(anyString(), anyList());
+    }
+
+    @Test
+    void assigningAndRemovingAProfileMapsExactlyThatRealmRole() {
+        RoleRepresentation profile = role("p1", "mto-users-viewer");
+        when(keycloak.findRealmRole("mto-users-viewer")).thenReturn(profile);
+        when(keycloak.getUserRealmRoles(USER_ID)).thenReturn(List.of(profile, role("x", "default-roles-mto")));
+
+        List<ProfileSummaryResponse> afterAssign = profileService.assignProfile(USER_ID, "mto-users-viewer");
+        List<ProfileSummaryResponse> afterRemove = profileService.removeProfile(USER_ID, "mto-users-viewer");
+
+        verify(keycloak).addRealmRoles(USER_ID, List.of(profile));
+        verify(keycloak).removeRealmRoles(USER_ID, List.of(profile));
+        assertEquals(List.of("mto-users-viewer"), afterAssign.stream().map(ProfileSummaryResponse::name).toList());
+        assertEquals(afterAssign, afterRemove, "Lo que devuelve es lo que Keycloak tenga, sin cálculo local");
+        assertEquals(2, auditLines.list.size());
+        assertTrue(auditLines.list.get(0).getFormattedMessage().contains("action=PROFILE_ASSIGNED"));
+        assertTrue(auditLines.list.get(1).getFormattedMessage().contains("action=PROFILE_REMOVED"));
+    }
+
+    // --- helpers ----------------------------------------------------------------------------------
+
+    private String onlyAuditLine() {
+        assertEquals(1, auditLines.list.size(), "Exactamente una línea de auditoría");
+        String line = auditLines.list.getFirst().getFormattedMessage();
+        assertNotNull(line);
+        return line;
+    }
+
+    private static KeycloakAdminProperties keycloakProperties() {
+        return new KeycloakAdminProperties("http://kc:8080", "mto", "mto-users-svc", "secret",
+                Duration.ofSeconds(2), Duration.ofSeconds(10), 10, List.of("realm-management", "broker"));
+    }
+
+    private static UserRepresentation user(String username) {
+        UserRepresentation user = new UserRepresentation();
+        user.setId(USER_ID);
+        user.setUsername(username);
+        return user;
+    }
+
+    private static ClientRepresentation client(String uuid, String clientId) {
+        ClientRepresentation client = new ClientRepresentation();
+        client.setId(uuid);
+        client.setClientId(clientId);
+        return client;
+    }
+
+    private static RoleRepresentation role(String id, String name) {
+        RoleRepresentation role = new RoleRepresentation();
+        role.setId(id);
+        role.setName(name);
+        return role;
+    }
+
+    private static RoleRepresentation clientRole(String clientUuid, String name) {
+        RoleRepresentation role = role(clientUuid + ":" + name, name);
+        role.setClientRole(true);
+        role.setContainerId(clientUuid);
+        return role;
+    }
+
+    private static ClientMappingsRepresentation clientMappings(String clientId, String... roleNames) {
+        ClientMappingsRepresentation mappings = new ClientMappingsRepresentation();
+        mappings.setClient(clientId);
+        mappings.setMappings(java.util.Arrays.stream(roleNames).map(name -> role("id-" + name, name)).toList());
+        return mappings;
+    }
+}

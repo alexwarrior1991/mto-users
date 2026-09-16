@@ -1,0 +1,45 @@
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+
+spring:
+  config:
+    activate:
+      on-profile: prod
+  lifecycle:
+    timeout-per-shutdown-phase: ${SHUTDOWN_TIMEOUT:30s}
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # Sin valor por defecto a proposito: si la variable falta, la aplicacion no arranca. Es
+          # preferible a arrancar apuntando a un emisor de ejemplo y que nadie se entere.
+          issuer-uri: ${KEYCLOAK_ISSUER_URI}
+
+app:
+  security:
+    client-id: ${KEYCLOAK_USERS_CLIENT_ID}
+    audience-validation-enabled: ${KEYCLOAK_AUDIENCE_VALIDATION_ENABLED:true}
+    required-audience: ${KEYCLOAK_AUDIENCE}
+    # La documentacion describe la superficie completa de la API: en produccion queda cerrada.
+    expose-api-docs: ${APP_SECURITY_EXPOSE_API_DOCS:false}
+    cors:
+      allowed-origins:
+        - ${APP_CORS_ALLOWED_ORIGIN}
+  keycloak:
+    # Sin valores por defecto: un despliegue que administre el realm equivocado, o sin secreto, no
+    # debe arrancar.
+    auth-server-url: ${KEYCLOAK_AUTH_SERVER_URL}
+    realm: ${KEYCLOAK_REALM}
+    admin-client-id: ${KEYCLOAK_ADMIN_CLIENT_ID}
+    admin-client-secret: ${KEYCLOAK_ADMIN_CLIENT_SECRET}
+
+management:
+  endpoint:
+    health:
+      show-details: ${MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS:never}
+
+logging:
+  level:
+    root: ${LOGGING_LEVEL_ROOT:INFO}
+    com.alejandro.mtousers: ${LOGGING_LEVEL_APP:INFO}
