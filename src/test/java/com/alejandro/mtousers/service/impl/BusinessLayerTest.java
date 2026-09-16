@@ -16,9 +16,12 @@ import com.alejandro.mtousers.dto.RequiredAction;
 import com.alejandro.mtousers.dto.ResetPasswordRequest;
 import com.alejandro.mtousers.dto.RoleNamesRequest;
 import com.alejandro.mtousers.dto.UpdateUserRequest;
+import com.alejandro.mtousers.dto.UserCredentialResponse;
 import com.alejandro.mtousers.dto.UserResponse;
 import com.alejandro.mtousers.dto.UserRolesResponse;
 import com.alejandro.mtousers.dto.UserSearchCriteria;
+import com.alejandro.mtousers.dto.UserSessionResponse;
+import com.alejandro.mtousers.exception.CredentialNotFoundException;
 import com.alejandro.mtousers.exception.InvalidSearchException;
 import com.alejandro.mtousers.exception.ProfileNotFoundException;
 import com.alejandro.mtousers.exception.ProtectedClientException;
@@ -34,6 +37,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.keycloak.representations.idm.ClientMappingsRepresentation;
 import org.keycloak.representations.idm.ClientRepresentation;
+import org.keycloak.representations.idm.CredentialRepresentation;
 import org.keycloak.representations.idm.MappingsRepresentation;
 import org.keycloak.representations.idm.RoleRepresentation;
 import org.keycloak.representations.idm.UserRepresentation;
@@ -177,7 +181,7 @@ class BusinessLayerTest {
         assertEquals(List.of("mto-frontend", "mto-users-api"), sessions.getFirst().clients(), "Por nombre de cliente y ordenados");
 
         userService.revokeSession(USER_ID, "session-1");
-        verify(keycloak).deleteSession("session-1");
+        verify(keycloak).deleteSession("session-1", false);
         assertTrue(onlyAuditLine().contains("action=SESSION_REVOKED"));
     }
 
@@ -190,7 +194,7 @@ class BusinessLayerTest {
         when(keycloak.listUserSessions(USER_ID)).thenReturn(List.of(session("session-1", "10.0.0.9", Map.of())));
 
         assertThrows(SessionNotFoundException.class, () -> userService.revokeSession(USER_ID, "session-de-otro"));
-        verify(keycloak, never()).deleteSession(anyString());
+        verify(keycloak, never()).deleteSession(anyString(), org.mockito.ArgumentMatchers.anyBoolean());
         assertEquals(0, auditLines.list.size(), "Lo que no se hizo no se audita");
     }
 
@@ -200,6 +204,92 @@ class BusinessLayerTest {
 
         verify(keycloak).logoutUser(USER_ID);
         assertTrue(onlyAuditLine().contains("action=ALL_SESSIONS_REVOKED"));
+    }
+
+    /**
+     * Las sesiones offline no salen en /sessions ni las cierra el logout: hay que buscarlas cliente
+     * a cliente, y los clientes salen de los consentimientos.
+     */
+    @Test
+    void offlineSessionsAreGatheredClientByClientListedAndClosed() {
+        when(keycloak.findClientsWithOfflineTokens(USER_ID)).thenReturn(List.of("uuid-frontend", "uuid-movil"));
+        when(keycloak.listOfflineSessions(USER_ID, "uuid-frontend"))
+                .thenReturn(List.of(session("offline-1", "10.0.0.9", Map.of("uuid-frontend", "mto-frontend"))));
+        when(keycloak.listOfflineSessions(USER_ID, "uuid-movil"))
+                .thenReturn(List.of(session("offline-2", "10.0.0.10", Map.of("uuid-movil", "mto-movil"))));
+
+        var sessions = userService.listOfflineSessions(USER_ID);
+
+        assertEquals(List.of("offline-1", "offline-2"), sessions.stream().map(UserSessionResponse::id).toList());
+        assertEquals(List.of("mto-frontend"), sessions.getFirst().clients());
+        verify(keycloak, never()).listUserSessions(USER_ID);
+
+        userService.revokeOfflineSession(USER_ID, "offline-2");
+        verify(keycloak).deleteSession("offline-2", true);
+        assertTrue(onlyAuditLine().contains("action=OFFLINE_SESSION_REVOKED"));
+    }
+
+    @Test
+    void anOfflineSessionOfAnotherUserIsNotClosedThroughThisUserEither() {
+        when(keycloak.findClientsWithOfflineTokens(USER_ID)).thenReturn(List.of("uuid-frontend"));
+        when(keycloak.listOfflineSessions(USER_ID, "uuid-frontend"))
+                .thenReturn(List.of(session("offline-1", "10.0.0.9", Map.of())));
+
+        assertThrows(SessionNotFoundException.class, () -> userService.revokeOfflineSession(USER_ID, "offline-de-otro"));
+        verify(keycloak, never()).deleteSession(anyString(), org.mockito.ArgumentMatchers.anyBoolean());
+        assertEquals(0, auditLines.list.size());
+    }
+
+    @Test
+    void closingEveryOfflineSessionClosesThemOneByOneAndCountsThemInTheAuditLine() {
+        when(keycloak.findClientsWithOfflineTokens(USER_ID)).thenReturn(List.of("uuid-frontend"));
+        when(keycloak.listOfflineSessions(USER_ID, "uuid-frontend")).thenReturn(List.of(
+                session("offline-1", "10.0.0.9", Map.of()), session("offline-2", "10.0.0.9", Map.of())));
+
+        userService.revokeAllOfflineSessions(USER_ID);
+
+        verify(keycloak).deleteSession("offline-1", true);
+        verify(keycloak).deleteSession("offline-2", true);
+        assertTrue(onlyAuditLine().contains("action=ALL_OFFLINE_SESSIONS_REVOKED"));
+        assertTrue(onlyAuditLine().contains("sessions=2"));
+
+        // Sin tokens offline no hay nada que cerrar y tampoco es un error.
+        auditLines.list.clear();
+        when(keycloak.findClientsWithOfflineTokens(USER_ID)).thenReturn(List.of());
+        userService.revokeAllOfflineSessions(USER_ID);
+        assertTrue(onlyAuditLine().contains("sessions=0"));
+    }
+
+    /**
+     * Quitar una credencial se audita con su tipo, que es lo que distingue quitarle a alguien el
+     * segundo factor de quitarle una contrasena vieja. Por eso se busca antes entre las suyas.
+     */
+    @Test
+    void credentialsAreListedWithoutSecretsAndRemovedByIdWithTheirTypeAudited() {
+        when(keycloak.listCredentials(USER_ID)).thenReturn(List.of(
+                credential("cred-1", "password", null, 1_700_000_000_000L),
+                credential("cred-2", "otp", "Movil de guardia", 1_700_000_060_000L)));
+
+        var credentials = userService.listCredentials(USER_ID);
+
+        assertEquals(List.of("password", "otp"), credentials.stream().map(UserCredentialResponse::type).toList());
+        assertEquals("Movil de guardia", credentials.getLast().userLabel());
+        assertEquals(Instant.ofEpochMilli(1_700_000_000_000L), credentials.getFirst().createdAt());
+
+        userService.deleteCredential(USER_ID, "cred-2");
+
+        verify(keycloak).deleteCredential(USER_ID, "cred-2");
+        assertTrue(onlyAuditLine().contains("action=CREDENTIAL_DELETED"));
+        assertTrue(onlyAuditLine().contains("type=otp"), onlyAuditLine());
+    }
+
+    @Test
+    void aCredentialThatIsNotHisIsNotRemovedThroughHim() {
+        when(keycloak.listCredentials(USER_ID)).thenReturn(List.of(credential("cred-1", "password", null, 1L)));
+
+        assertThrows(CredentialNotFoundException.class, () -> userService.deleteCredential(USER_ID, "cred-de-otro"));
+        verify(keycloak, never()).deleteCredential(anyString(), anyString());
+        assertEquals(0, auditLines.list.size());
     }
 
     @Test
@@ -489,6 +579,17 @@ class BusinessLayerTest {
     private static KeycloakAdminProperties keycloakProperties() {
         return new KeycloakAdminProperties("http://kc:8080", "mto", "mto-users-svc", "secret",
                 Duration.ofSeconds(2), Duration.ofSeconds(10), 10, List.of("realm-management", "broker"));
+    }
+
+    private static CredentialRepresentation credential(String id, String type, String label, long createdDate) {
+        CredentialRepresentation credential = new CredentialRepresentation();
+        credential.setId(id);
+        credential.setType(type);
+        credential.setUserLabel(label);
+        credential.setCreatedDate(createdDate);
+        // Lo que Keycloak si devuelve de como esta guardado el secreto, y que no puede salir por la API.
+        credential.setCredentialData("{\"algorithm\":\"argon2\",\"hashIterations\":5}");
+        return credential;
     }
 
     private static UserSessionRepresentation session(String id, String ip, Map<String, String> clients) {

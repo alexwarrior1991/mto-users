@@ -3,6 +3,7 @@ package com.alejandro.mtousers.keycloak;
 import com.alejandro.mtousers.configuration.keycloak.KeycloakAdminProperties;
 import com.alejandro.mtousers.dto.UserSearchCriteria;
 import com.alejandro.mtousers.exception.ClientNotFoundException;
+import com.alejandro.mtousers.exception.CredentialNotFoundException;
 import com.alejandro.mtousers.exception.KeycloakAccessException;
 import com.alejandro.mtousers.exception.KeycloakRequestException;
 import com.alejandro.mtousers.exception.KeycloakUnavailableException;
@@ -34,6 +35,7 @@ import org.slf4j.LoggerFactory;
 import java.net.URI;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.Supplier;
 
@@ -55,6 +57,9 @@ public class KeycloakAdminClientGateway implements KeycloakAdminGateway {
     private static final Logger LOGGER = LoggerFactory.getLogger(KeycloakAdminClientGateway.class);
 
     /** Errores del endpoint de token (RFC 6749): un 400 con uno de estos es la cuenta de servicio, no la petición. */
+    /** Clave con la que los consentimientos de un usuario nombran un token offline. */
+    private static final String OFFLINE_TOKEN_GRANT = "Offline Token";
+
     private static final Set<String> OAUTH_CLIENT_ERRORS = Set.of(
             "invalid_client", "unauthorized_client", "invalid_grant", "invalid_request", "invalid_scope",
             "unsupported_grant_type", "access_denied");
@@ -309,6 +314,70 @@ public class KeycloakAdminClientGateway implements KeycloakAdminGateway {
         });
     }
 
+    /**
+     * {@code getConsents()} del admin client devuelve mapas sin tipar, que es la forma que tiene la
+     * Admin API de contar los consentimientos; se traducen aquí para que no salga ninguno del
+     * paquete. Cada concesión adicional con clave {@code Offline Token} trae en {@code client} el
+     * UUID del cliente que tiene el token.
+     */
+    @Override
+    public List<String> findClientsWithOfflineTokens(String userId) {
+        List<Map<String, Object>> consents = call("read consents of user " + userId, () -> {
+            try {
+                return realm.users().get(userId).getConsents();
+            } catch (NotFoundException notFound) {
+                throw new UserNotFoundException(userId);
+            }
+        });
+        return consents.stream()
+                .map(consent -> consent.get("additionalGrants"))
+                .filter(List.class::isInstance)
+                .flatMap(grants -> ((List<?>) grants).stream())
+                .filter(Map.class::isInstance)
+                .map(grant -> (Map<?, ?>) grant)
+                .filter(grant -> OFFLINE_TOKEN_GRANT.equals(grant.get("key")))
+                .map(grant -> grant.get("client"))
+                .filter(Objects::nonNull)
+                .map(Object::toString)
+                .distinct()
+                .toList();
+    }
+
+    @Override
+    public List<UserSessionRepresentation> listOfflineSessions(String userId, String clientUuid) {
+        return call("list offline sessions of user " + userId, () -> {
+            try {
+                return realm.users().get(userId).getOfflineSessions(clientUuid);
+            } catch (NotFoundException notFound) {
+                throw new UserNotFoundException(userId);
+            }
+        });
+    }
+
+    @Override
+    public List<CredentialRepresentation> listCredentials(String userId) {
+        return call("list credentials of user " + userId, () -> {
+            try {
+                return realm.users().get(userId).credentials();
+            } catch (NotFoundException notFound) {
+                throw new UserNotFoundException(userId);
+            }
+        });
+    }
+
+    @Override
+    public void deleteCredential(String userId, String credentialId) {
+        // Sin el id de la credencial en el nombre de la operacion no haria falta, pero tampoco
+        // estorba: un id de credencial no es un secreto.
+        run("delete credential " + credentialId + " of user " + userId, () -> {
+            try {
+                realm.users().get(userId).removeCredential(credentialId);
+            } catch (NotFoundException notFound) {
+                throw new CredentialNotFoundException(credentialId);
+            }
+        });
+    }
+
     @Override
     public void logoutUser(String userId) {
         run("log out user " + userId, () -> {
@@ -326,10 +395,10 @@ public class KeycloakAdminClientGateway implements KeycloakAdminGateway {
      * Lo hace {@code UserServiceImpl}.
      */
     @Override
-    public void deleteSession(String sessionId) {
+    public void deleteSession(String sessionId, boolean offline) {
         run("delete session " + sessionId, () -> {
             try {
-                realm.deleteSession(sessionId, false);
+                realm.deleteSession(sessionId, offline);
             } catch (NotFoundException notFound) {
                 throw new SessionNotFoundException(sessionId);
             }

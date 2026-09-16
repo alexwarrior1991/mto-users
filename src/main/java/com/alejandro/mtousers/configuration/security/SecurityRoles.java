@@ -36,6 +36,13 @@ public final class SecurityRoles {
      */
     public static final String USERS_SESSIONS_WRITE = "USERS_SESSIONS_WRITE";
 
+    /**
+     * Quitar credenciales de un usuario. No lo da {@code users-password-reset}: fijar una
+     * contraseña temporal deja entrar a su dueño, y quitar una credencial puede ser quitarle el
+     * segundo factor, que es justo lo que protege la cuenta.
+     */
+    public static final String USERS_CREDENTIALS_WRITE = "USERS_CREDENTIALS_WRITE";
+
     /** Lectura de los endpoints de Actuator. */
     public static final String OPS_METRICS = "OPS_METRICS";
 

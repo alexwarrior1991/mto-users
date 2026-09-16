@@ -64,8 +64,8 @@ necesita estos roles del cliente `realm-management`:
 
 | Rol | Para qué |
 |---|---|
-| `view-users`, `query-users` | Buscar, contar y leer usuarios, sus role-mappings, sus sesiones y quién tiene un rol |
-| `manage-users` | Crear, modificar, habilitar, borrar, fijar contraseñas, enviar acciones por correo, cerrar sesiones y **cambiar los role-mappings** de un usuario (realm y cliente) |
+| `view-users`, `query-users` | Buscar, contar y leer usuarios, sus role-mappings, sus sesiones, sus consentimientos, sus credenciales y quién tiene un rol |
+| `manage-users` | Crear, modificar, habilitar, borrar, fijar contraseñas, enviar acciones por correo, cerrar sesiones (normales y offline), quitar credenciales y **cambiar los role-mappings** de un usuario (realm y cliente) |
 | `view-clients`, `query-clients` | Listar clientes y los roles de cada uno, resolver `clientId` → UUID |
 | `view-realm` | Leer los roles de realm (los perfiles) y sus compuestos |
 
@@ -93,6 +93,7 @@ con `errorCode` (estable), `correlationId`, `timestamp` y, en los 400 de validac
 | Sin token / sin permiso | 401 / 403 | `AUTH-401` / `AUTH-403` |
 | Usuario, cliente, rol o perfil inexistente | 404 | `USR-404`, `CLI-404`, `ROL-404`, `PRF-404` |
 | Sesión inexistente, ya cerrada o de otro usuario | 404 | `SES-404` |
+| Credencial inexistente o de otro usuario | 404 | `CRED-404` |
 | Usuario duplicado (username o email) | 409 | `USR-409` |
 | Keycloak rechaza la cuenta de servicio (secreto o roles de `realm-management`) | 502 | `KC-ACCESS` |
 | Keycloak responde con un error inesperado (500 sin SMTP, por ejemplo) | 502 | `KC-502` |
@@ -103,7 +104,10 @@ con `errorCode` (estable), `correlationId`, `timestamp` y, en los 400 de validac
 
 Cada operación que modifica algo deja una línea en el logger `com.alejandro.mtousers.audit`:
 `action=USER_CREATED actor=usuarios.responsable actorId=<sub> targetUserId=<id> detail=...`. Cerrar
-sesiones también deja la suya (`SESSION_REVOKED`, `ALL_SESSIONS_REVOKED`); las consultas no. El
+sesiones también deja la suya (`SESSION_REVOKED`, `ALL_SESSIONS_REVOKED`,
+`OFFLINE_SESSION_REVOKED`, `ALL_OFFLINE_SESSIONS_REVOKED`) y quitar una credencial deja
+`CREDENTIAL_DELETED` **con el tipo** —quitar un OTP no es lo mismo que quitar una contraseña
+vieja—; las consultas no. El
 detalle son nombres de roles, perfiles o acciones; **nunca una contraseña ni un token** (los DTOs
 que llevan contraseña la ocultan en `toString()`). El identificador de correlación viaja en
 `X-Correlation-Id` —lo genera el gateway o, si falta, este servicio—, va en cada línea de log a
@@ -127,6 +131,8 @@ realm llamado como un permiso nunca lo conceda.
 | `POST /{id}/reset-password` | `users-password-reset` |
 | `PUT`/`DELETE /{id}/profiles/{profileName}` | `users-profiles-write` |
 | `DELETE /{id}/sessions`, `DELETE /{id}/sessions/{sessionId}` | `users-sessions-write` |
+| `DELETE /{id}/offline-sessions`, `DELETE /{id}/offline-sessions/{sessionId}` | `users-sessions-write` |
+| `DELETE /{id}/credentials/{credentialId}` | `users-credentials-write` |
 | `/actuator/health`, `/actuator/info` | abiertos |
 | resto de `/actuator/**` (lectura) | `ops-metrics` |
 | `POST`/`DELETE /actuator/**` | `ops-write` |
@@ -139,7 +145,13 @@ Cerrar sesiones tiene permiso propio, `users-sessions-write`, y no lo dan ni `us
 `users-delete`: echar a todo el mundo de la aplicación no se parece a editar una ficha, y quien
 administra datos no tiene por qué poder hacerlo. Las sesiones cuelgan de dos segmentos
 (`/{id}/sessions/{sessionId}`), así que la regla de `DELETE` del usuario —que cubre uno— no las
-alcanzaba: llevan sus dos `requestMatchers` explícitos, por delante de ella.
+alcanzaba: llevan sus dos `requestMatchers` explícitos, por delante de ella. Las offline son
+sesiones igual y las cubre el mismo permiso.
+
+Quitar una credencial tiene el suyo, `users-credentials-write`, separado de `users-password-reset`:
+fijar una contraseña temporal deja entrar a su dueño con lo que el administrador ha puesto, pero
+quitar una credencial puede ser quitarle el **segundo factor**, que es precisamente lo que protege
+la cuenta. Ninguno de los dos implica al otro.
 
 ---
 
@@ -164,6 +176,11 @@ que es el valor del perfil `dev`).
 | `GET /api/v1/users/{userId}/sessions` | Sesiones abiertas: `[{id, username, ipAddress, startedAt, lastAccessAt, clients}]` |
 | `DELETE /api/v1/users/{userId}/sessions` | Cierra todas. `204`, idempotente |
 | `DELETE /api/v1/users/{userId}/sessions/{sessionId}` | Cierra una. `204`; `404 SES-404` si esa sesión no es de ese usuario |
+| `GET /api/v1/users/{userId}/offline-sessions` | Sesiones offline (tokens con `offline_access`), mismo cuerpo que las normales |
+| `DELETE /api/v1/users/{userId}/offline-sessions` | Cierra todas las offline. `204`, idempotente |
+| `DELETE /api/v1/users/{userId}/offline-sessions/{sessionId}` | Cierra una offline. `204`; `404 SES-404` si no es de ese usuario |
+| `GET /api/v1/users/{userId}/credentials` | `[{id, type, userLabel, createdAt}]`. Sin secretos y sin metadatos de cifrado |
+| `DELETE /api/v1/users/{userId}/credentials/{credentialId}` | Quita una credencial. `204`; `404 CRED-404` si no es de ese usuario |
 
 ### Roles
 
@@ -244,6 +261,56 @@ Cerrar una sesión suelta comprueba antes que sea de ese usuario y responde `404
 es. No es una comprobación de cortesía: el endpoint de Keycloak que borra una sesión cuelga del
 realm y no del usuario, así que sin ella un id ajeno —de otra persona— se cerraría igual.
 
+### Sesiones offline: lo que no cierra «cerrar todas»
+
+Un token emitido con el scope `offline_access` está hecho para sobrevivir al cierre de sesión, y lo
+hace: **no abre sesión normal** (no sale en `GET /sessions`), **no lo cierra** `DELETE /sessions` y
+sigue refrescándose después. Por eso tiene su propio recurso, con la misma forma que el anterior:
+
+```
+GET    /api/v1/users/{userId}/offline-sessions
+DELETE /api/v1/users/{userId}/offline-sessions
+DELETE /api/v1/users/{userId}/offline-sessions/{sessionId}
+```
+
+**Deshabilitar a alguien no revoca nada.** Mientras está deshabilitado, Keycloak bloquea el
+refresco; al volver a habilitarlo, el mismo token offline vuelve a funcionar. Lo único que lo mata
+es cerrar su sesión offline. Así que dar de baja de verdad son tres llamadas, y en este orden:
+
+```
+PATCH  /api/v1/users/{id}/enabled        {"enabled": false}
+DELETE /api/v1/users/{id}/sessions
+DELETE /api/v1/users/{id}/offline-sessions
+```
+
+Keycloak no ofrece «las sesiones offline de este usuario»: se consultan cliente a cliente. El
+servicio no recorre todos los clientes del realm, sino que mira primero los **consentimientos** del
+usuario, donde cada token offline deja una concesión `Offline Token` con el cliente al que
+pertenece; con eso pregunta solo por esos. Si nadie usa `offline_access` en el realm, estas llamadas
+responden una lista vacía y no cuestan nada.
+
+### Credenciales
+
+```
+GET    /api/v1/users/{userId}/credentials
+DELETE /api/v1/users/{userId}/credentials/{credentialId}
+```
+
+El caso para el que existe es un **segundo factor perdido**: quitar la credencial `otp` deja que la
+persona vuelva a enrolar el suyo. `type` es el nombre de Keycloak para la clase de credencial
+(`password`, `otp`, `webauthn`, `webauthn-passwordless`) y `userLabel` el nombre que le puso su
+dueño al enrolarla.
+
+La respuesta **no lleva secretos ni nada de cómo están guardados**. `secretData` —el hash y su
+sal— Keycloak no lo devuelve nunca, pero sí devuelve `credentialData`, que para una contraseña trae
+el algoritmo y sus parámetros (`argon2`, iteraciones, memoria); eso se queda fuera de la API, que
+no es información que necesite quien administra usuarios.
+
+Quitar la contraseña deja a esa persona sin poder entrar con contraseña hasta que se le fije otra
+con `reset-password`; es una operación legítima y el servicio no la bloquea, pero conviene saberlo.
+Un id de credencial que no sea de ese usuario es `404 CRED-404`, y la auditoría registra el **tipo**
+de lo que se quitó.
+
 ### Ejemplos con curl
 
 Con `mto-platform` levantado y el realm ensamblado con usuarios de desarrollo
@@ -312,6 +379,15 @@ curl -s -H "Authorization: Bearer $TOKEN" "$BASE/$USER_ID/sessions" | jq
 SESSION_ID=$(curl -s -H "Authorization: Bearer $TOKEN" "$BASE/$USER_ID/sessions" | jq -r '.[0].id')
 curl -s -o /dev/null -w "%{http_code}\n" -X DELETE "$BASE/$USER_ID/sessions/$SESSION_ID" -H "Authorization: Bearer $TOKEN"
 curl -s -o /dev/null -w "%{http_code}\n" -X DELETE "$BASE/$USER_ID/sessions" -H "Authorization: Bearer $TOKEN"
+
+# Sesiones offline: ver y cerrar (lo que 'DELETE /sessions' no toca)
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/$USER_ID/offline-sessions" | jq
+curl -s -o /dev/null -w "%{http_code}\n" -X DELETE "$BASE/$USER_ID/offline-sessions" -H "Authorization: Bearer $TOKEN"
+
+# Credenciales: ver y quitar el segundo factor de quien ha perdido el movil
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/$USER_ID/credentials" | jq
+OTP_ID=$(curl -s -H "Authorization: Bearer $TOKEN" "$BASE/$USER_ID/credentials" | jq -r '.[] | select(.type=="otp") | .id')
+curl -s -o /dev/null -w "%{http_code}\n" -X DELETE "$BASE/$USER_ID/credentials/$OTP_ID" -H "Authorization: Bearer $TOKEN"
 
 # Borrar
 curl -s -o /dev/null -w "%{http_code}\n" -X DELETE "$BASE/$USER_ID" -H "Authorization: Bearer $TOKEN"
@@ -429,8 +505,9 @@ recursos simulada), `BusinessLayerTest` (servicios y auditoría), `MapperLayerTe
 `DtoValidationTest`, `MtoUsersApplicationTests` (el contexto entero sin Keycloak escuchando) y
 `KeycloakUsersIT` (contra un Keycloak real: el ciclo de vida completo, que los seis roles de
 `realm-management` bastan, que un perfil llega expandido en el token, que el filtro por atributo
-combina con Y las claves distintas, que la lista de miembros de un rol no expande los compuestos y
-que un login abre una sesión que la API cierra).
+combina con Y las claves distintas, que la lista de miembros de un rol no expande los compuestos,
+que un login abre una sesión que la API cierra, que un token offline sobrevive al cierre de sesión y
+solo muere al cerrar la suya, y que una credencial se quita por su id).
 
 ---
 

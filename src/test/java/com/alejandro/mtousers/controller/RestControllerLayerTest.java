@@ -12,10 +12,12 @@ import com.alejandro.mtousers.dto.ProfileSummaryResponse;
 import com.alejandro.mtousers.dto.RequiredAction;
 import com.alejandro.mtousers.dto.ResetPasswordRequest;
 import com.alejandro.mtousers.dto.RoleNamesRequest;
+import com.alejandro.mtousers.dto.UserCredentialResponse;
 import com.alejandro.mtousers.dto.UserResponse;
 import com.alejandro.mtousers.dto.UserRolesResponse;
 import com.alejandro.mtousers.dto.UserSearchCriteria;
 import com.alejandro.mtousers.dto.UserSessionResponse;
+import com.alejandro.mtousers.exception.CredentialNotFoundException;
 import com.alejandro.mtousers.exception.GlobalExceptionHandler;
 import com.alejandro.mtousers.exception.InvalidSearchException;
 import com.alejandro.mtousers.exception.KeycloakUnavailableException;
@@ -176,6 +178,55 @@ class RestControllerLayerTest {
         mockMvc.perform(delete(USERS + "/" + USER_ID + "/sessions/otra").with(admin()))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.errorCode").value("SES-404"));
+    }
+
+    @Test
+    void offlineSessionsHaveTheirOwnResourceNextToTheRegularOnes() throws Exception {
+        when(userService.listOfflineSessions(USER_ID)).thenReturn(List.of(new UserSessionResponse(
+                "offline-1", "ana.uno", "10.0.0.9", Instant.EPOCH, Instant.EPOCH.plusSeconds(60), List.of("mto-frontend"))));
+
+        mockMvc.perform(get(USERS + "/" + USER_ID + "/offline-sessions").with(admin()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].id").value("offline-1"))
+                .andExpect(jsonPath("$[0].clients[0]").value("mto-frontend"));
+
+        mockMvc.perform(delete(USERS + "/" + USER_ID + "/offline-sessions/offline-1").with(admin()))
+                .andExpect(status().isNoContent());
+        mockMvc.perform(delete(USERS + "/" + USER_ID + "/offline-sessions").with(admin()))
+                .andExpect(status().isNoContent());
+
+        verify(userService).revokeOfflineSession(USER_ID, "offline-1");
+        verify(userService).revokeAllOfflineSessions(USER_ID);
+        verify(userService, never()).revokeAllSessions(USER_ID);
+    }
+
+    @Test
+    void credentialsAreListedAndRemovedById() throws Exception {
+        when(userService.listCredentials(USER_ID)).thenReturn(List.of(
+                new UserCredentialResponse("cred-1", "otp", "Movil de guardia", Instant.EPOCH)));
+
+        mockMvc.perform(get(USERS + "/" + USER_ID + "/credentials").with(admin()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].id").value("cred-1"))
+                .andExpect(jsonPath("$[0].type").value("otp"))
+                .andExpect(jsonPath("$[0].userLabel").value("Movil de guardia"))
+                .andExpect(jsonPath("$[0].createdAt").value("1970-01-01T00:00:00Z"))
+                .andExpect(jsonPath("$[0].credentialData").doesNotExist())
+                .andExpect(jsonPath("$[0].secretData").doesNotExist());
+
+        mockMvc.perform(delete(USERS + "/" + USER_ID + "/credentials/cred-1").with(admin()))
+                .andExpect(status().isNoContent());
+        verify(userService).deleteCredential(USER_ID, "cred-1");
+    }
+
+    @Test
+    void aCredentialThatIsNotThereAnswers404ProblemJson() throws Exception {
+        doThrow(new CredentialNotFoundException("cred-9")).when(userService).deleteCredential(USER_ID, "cred-9");
+
+        mockMvc.perform(delete(USERS + "/" + USER_ID + "/credentials/cred-9").with(admin()))
+                .andExpect(status().isNotFound())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.errorCode").value("CRED-404"));
     }
 
     @Test
@@ -386,6 +437,7 @@ class RestControllerLayerTest {
                 SecurityAuthorityPrefixes.ROLE_PREFIX + SecurityRoles.USERS_ROLES_WRITE,
                 SecurityAuthorityPrefixes.ROLE_PREFIX + SecurityRoles.USERS_PASSWORD_RESET,
                 SecurityAuthorityPrefixes.ROLE_PREFIX + SecurityRoles.USERS_PROFILES_WRITE,
-                SecurityAuthorityPrefixes.ROLE_PREFIX + SecurityRoles.USERS_SESSIONS_WRITE));
+                SecurityAuthorityPrefixes.ROLE_PREFIX + SecurityRoles.USERS_SESSIONS_WRITE,
+                SecurityAuthorityPrefixes.ROLE_PREFIX + SecurityRoles.USERS_CREDENTIALS_WRITE));
     }
 }

@@ -31,6 +31,10 @@
           "description": "Cerrar sesiones abiertas de un usuario, una o todas"
         },
         {
+          "name": "users-credentials-write",
+          "description": "Quitar credenciales de un usuario (segundo factor perdido, contrasena vieja)"
+        },
+        {
           "name": "ops-metrics",
           "description": "Lectura de los endpoints de Actuator de mto-users"
         },
@@ -65,7 +69,8 @@
               "users-roles-write",
               "users-password-reset",
               "users-profiles-write",
-              "users-sessions-write"
+              "users-sessions-write",
+              "users-credentials-write"
             ]
           }
         }
@@ -83,7 +88,8 @@
               "users-roles-write",
               "users-password-reset",
               "users-profiles-write",
-              "users-sessions-write"
+              "users-sessions-write",
+              "users-credentials-write"
             ]
           }
         }

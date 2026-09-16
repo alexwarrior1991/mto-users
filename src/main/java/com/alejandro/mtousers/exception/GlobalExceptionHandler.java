@@ -62,7 +62,7 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler({ClientNotFoundException.class, RoleNotFoundException.class, ProfileNotFoundException.class,
-            SessionNotFoundException.class})
+            SessionNotFoundException.class, CredentialNotFoundException.class})
     public ResponseEntity<ProblemDetail> handleNotFound(UsersException exception, HttpServletRequest request) {
         return business(exception, HttpStatus.NOT_FOUND, request);
     }

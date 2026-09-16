@@ -16,8 +16,10 @@ Dos ficheros, que aplica `mto-platform/keycloak/apply-partials.sh` en su sitio d
 
 Permisos (roles del cliente `mto-users-api`): `users-read`, `users-write`, `users-delete`,
 `users-roles-write`, `users-password-reset`, `users-profiles-write`, `users-sessions-write`,
-`ops-metrics`, `ops-write`. Ninguno implica otro: `users-sessions-write` —cerrar las sesiones
-abiertas de alguien— no lo dan ni `users-write` ni `users-delete`.
+`users-credentials-write`, `ops-metrics`, `ops-write`. Ninguno implica otro:
+`users-sessions-write` —cerrar las sesiones abiertas de alguien, normales u offline— no lo dan ni
+`users-write` ni `users-delete`, y `users-credentials-write` —quitar una credencial, que puede ser
+el segundo factor— no lo da `users-password-reset`.
 
 Perfiles (roles compuestos de realm): `mto-users-viewer` (`users-read`), `mto-users-manager`
 (todo menos `users-delete`) y `mto-users-admin` (todo). `mto-ops`, que vive en `mto-platform`,
@@ -30,9 +32,9 @@ import crea `mto-users-svc` pero sus roles se conceden aparte:
 
 | Rol de `realm-management` | Lo necesita para |
 |---|---|
-| `view-users` | Leer usuarios, sus role-mappings, sus sesiones abiertas y quién tiene un rol o un perfil |
+| `view-users` | Leer usuarios, sus role-mappings, sus sesiones (normales y offline), sus consentimientos, sus credenciales y quién tiene un rol o un perfil |
 | `query-users` | Buscar y contar usuarios, también por atributo |
-| `manage-users` | Crear, modificar, habilitar/deshabilitar, borrar, fijar contraseñas, enviar acciones por correo, cerrar sesiones y cambiar los role-mappings (de realm y de cliente) de un usuario |
+| `manage-users` | Crear, modificar, habilitar/deshabilitar, borrar, fijar contraseñas, enviar acciones por correo, cerrar sesiones (normales y offline), quitar credenciales y cambiar los role-mappings (de realm y de cliente) de un usuario |
 | `view-clients` | Leer clientes y los roles de cada uno (resolver `clientId` → UUID) |
 | `query-clients` | Listar clientes |
 | `view-realm` | Leer los roles de realm (los perfiles) y sus compuestos |
