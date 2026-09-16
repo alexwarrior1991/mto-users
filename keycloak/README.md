@@ -70,6 +70,18 @@ curl -s -X POST http://localhost:8082/admin/realms/mto/partialImport \
   --data-binary @keycloak/mto-users-partial-import.json
 ```
 
+## Los atributos de usuario dependen del realm, no de esta parcial
+
+El campo `attributes` de la API solo se guarda si el perfil de usuario declarativo del realm admite
+atributos no gestionados (`unmanagedAttributePolicy`). Keycloak 26 los descarta en silencio por
+defecto. Eso es configuración **del realm**, no de un cliente, así que no cabe en una importación
+parcial: lo trae el realm base de `mto-platform` (`keycloak/mto-realm.json`, con `ADMIN_EDIT`). El
+realm de `KeycloakUsersIT` lleva la misma configuración y es donde se comprueba.
+
+Al declararla hay que repetir los cuatro atributos del perfil por defecto (`username`, `email`,
+`firstName`, `lastName`): un `kc.user.profile.config` que solo lleve la política deja el perfil sin
+atributos y Keycloak empieza a descartar `firstName` y `lastName` sin avisar.
+
 ## Después de importar
 
 1. Conceder a `mto-users-svc` los seis roles de `realm-management` (arriba).

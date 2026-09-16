@@ -15,7 +15,9 @@
         "composite": true,
         "composites": {
           "client": {
-            "mto-users-api": ["users-read"]
+            "mto-users-api": [
+              "users-read"
+            ]
           }
         }
       },
@@ -25,7 +27,13 @@
         "composite": true,
         "composites": {
           "client": {
-            "mto-users-api": ["users-read", "users-write", "users-roles-write", "users-password-reset", "users-profiles-write"]
+            "mto-users-api": [
+              "users-read",
+              "users-write",
+              "users-roles-write",
+              "users-password-reset",
+              "users-profiles-write"
+            ]
           }
         }
       },
@@ -35,7 +43,14 @@
         "composite": true,
         "composites": {
           "client": {
-            "mto-users-api": ["users-read", "users-write", "users-delete", "users-roles-write", "users-password-reset", "users-profiles-write"]
+            "mto-users-api": [
+              "users-read",
+              "users-write",
+              "users-delete",
+              "users-roles-write",
+              "users-password-reset",
+              "users-profiles-write"
+            ]
           }
         }
       },
@@ -45,25 +60,47 @@
         "composite": true,
         "composites": {
           "client": {
-            "mto-stock-api": ["stock-read"]
+            "mto-stock-api": [
+              "stock-read"
+            ]
           }
         }
       }
     ],
     "client": {
       "mto-users-api": [
-        {"name": "users-read"},
-        {"name": "users-write"},
-        {"name": "users-delete"},
-        {"name": "users-roles-write"},
-        {"name": "users-password-reset"},
-        {"name": "users-profiles-write"},
-        {"name": "ops-metrics"},
-        {"name": "ops-write"}
+        {
+          "name": "users-read"
+        },
+        {
+          "name": "users-write"
+        },
+        {
+          "name": "users-delete"
+        },
+        {
+          "name": "users-roles-write"
+        },
+        {
+          "name": "users-password-reset"
+        },
+        {
+          "name": "users-profiles-write"
+        },
+        {
+          "name": "ops-metrics"
+        },
+        {
+          "name": "ops-write"
+        }
       ],
       "mto-stock-api": [
-        {"name": "stock-read"},
-        {"name": "stock-write"}
+        {
+          "name": "stock-read"
+        },
+        {
+          "name": "stock-write"
+        }
       ]
     }
   },
@@ -121,7 +158,14 @@
       "enabled": true,
       "serviceAccountClientId": "mto-users-svc",
       "clientRoles": {
-        "realm-management": ["view-users", "query-users", "manage-users", "view-clients", "query-clients", "view-realm"]
+        "realm-management": [
+          "view-users",
+          "query-users",
+          "manage-users",
+          "view-clients",
+          "query-clients",
+          "view-realm"
+        ]
       }
     },
     {
@@ -132,8 +176,29 @@
       "lastName": "Existente",
       "email": "existente@mto.local",
       "requiredActions": [],
-      "credentials": [{"type": "password", "value": "local", "temporary": false}],
-      "realmRoles": ["mto-users-viewer"]
+      "credentials": [
+        {
+          "type": "password",
+          "value": "local",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "mto-users-viewer"
+      ]
     }
-  ]
+  ],
+  "components": {
+    "org.keycloak.userprofile.UserProfileProvider": [
+      {
+        "providerId": "declarative-user-profile",
+        "subComponents": {},
+        "config": {
+          "kc.user.profile.config": [
+            "{\"attributes\":[{\"name\":\"username\",\"displayName\":\"${username}\",\"validations\":{\"length\":{\"min\":3,\"max\":255},\"username-prohibited-characters\":{},\"up-username-not-idn-homograph\":{}},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false},{\"name\":\"email\",\"displayName\":\"${email}\",\"validations\":{\"email\":{},\"length\":{\"max\":255}},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false},{\"name\":\"firstName\",\"displayName\":\"${firstName}\",\"validations\":{\"length\":{\"max\":255},\"person-name-prohibited-characters\":{}},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false},{\"name\":\"lastName\",\"displayName\":\"${lastName}\",\"validations\":{\"length\":{\"max\":255},\"person-name-prohibited-characters\":{}},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false}],\"unmanagedAttributePolicy\":\"ADMIN_EDIT\"}"
+          ]
+        }
+      }
+    ]
+  }
 }

@@ -175,6 +175,16 @@ que es el valor del perfil `dev`).
 `roles` y `profiles` son segmentos literales y Spring MVC los resuelve antes que `{userId}`; los
 ids de usuario se validan (`[A-Za-z0-9:._-]{1,255}`) antes de llamar a Keycloak.
 
+### Atributos y el perfil de usuario del realm
+
+Los `attributes` de un usuario solo se guardan si el **perfil de usuario declarativo** del realm
+admite atributos no gestionados. Keycloak 26 los **descarta en silencio** por defecto: la llamada
+responde 200 y el atributo no existe. El realm de `mto-platform` lo activa con
+`unmanagedAttributePolicy: ADMIN_EDIT` (visibles y editables por administración, no por el propio
+usuario), y el realm de `KeycloakUsersIT` lleva la misma configuración, que es lo que prueba que el
+ida y vuelta funciona. En un realm que no la tenga, este campo no hace nada: se quita la política y
+se quitan los atributos.
+
 ### Ejemplos con curl
 
 Con `mto-platform` levantado y el realm ensamblado con usuarios de desarrollo
