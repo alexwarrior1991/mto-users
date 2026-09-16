@@ -8,6 +8,8 @@ import com.alejandro.mtousers.exception.KeycloakRequestException;
 import com.alejandro.mtousers.exception.KeycloakUnavailableException;
 import com.alejandro.mtousers.exception.KeycloakUpstreamException;
 import com.alejandro.mtousers.exception.ProfileNotFoundException;
+import com.alejandro.mtousers.exception.RoleNotFoundException;
+import com.alejandro.mtousers.exception.SessionNotFoundException;
 import com.alejandro.mtousers.exception.UserAlreadyExistsException;
 import com.alejandro.mtousers.exception.UserNotFoundException;
 import jakarta.ws.rs.BadRequestException;
@@ -33,15 +35,20 @@ import org.keycloak.representations.idm.ClientRepresentation;
 import org.keycloak.representations.idm.CredentialRepresentation;
 import org.keycloak.representations.idm.RoleRepresentation;
 import org.keycloak.representations.idm.UserRepresentation;
+import org.keycloak.representations.idm.UserSessionRepresentation;
 import org.mockito.ArgumentCaptor;
 
+import java.io.IOException;
 import java.net.ConnectException;
+import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -91,13 +98,27 @@ class KeycloakAdminClientGatewayTest {
 
     @Test
     void searchPassesEveryFilterAndTurnsBlanksIntoNulls() {
-        when(usersQuery.search("garcia", null, null, false, null, 20, 10, false)).thenReturn(List.of(new UserRepresentation()));
-        when(usersQuery.count("garcia", null, null, false, null)).thenReturn(null);
+        when(usersQuery.search("garcia", null, null, false, null, null, 20, 10, false)).thenReturn(List.of(new UserRepresentation()));
+        when(usersQuery.count("garcia", null, null, false, null, null)).thenReturn(null);
 
-        UserSearchCriteria criteria = new UserSearchCriteria("garcia", " ", "", false, null, 20, 10);
+        UserSearchCriteria criteria = new UserSearchCriteria("garcia", " ", "", false, null, null, 20, 10);
 
         assertEquals(1, gateway.searchUsers(criteria).size());
         assertEquals(0, gateway.countUsers(criteria), "Un count sin cuerpo cuenta como cero, no como error");
+    }
+
+    /** Los atributos viajan en el parametro 'q' de Keycloak, separados por espacios. */
+    @Test
+    void attributesTravelAsKeycloaksQueryParameter() {
+        when(usersQuery.search(null, null, null, true, null, "departamento:operaciones turno:noche", 0, 20, false))
+                .thenReturn(List.of(new UserRepresentation()));
+        when(usersQuery.count(null, null, null, true, null, "departamento:operaciones turno:noche")).thenReturn(1);
+
+        UserSearchCriteria criteria = new UserSearchCriteria(null, null, null, true, null,
+                List.of("departamento:operaciones", "turno:noche"), 0, 20);
+
+        assertEquals(1, gateway.searchUsers(criteria).size());
+        assertEquals(1, gateway.countUsers(criteria));
     }
 
     @Test
@@ -177,12 +198,58 @@ class KeycloakAdminClientGatewayTest {
         assertTrue(failure.getMessage().contains("Failed to send execute actions email"));
     }
 
+    /**
+     * El cuerpo de error tiene dos formas —{@code errorMessage} de la Admin API y
+     * {@code error}/{@code error_description} del endpoint de token— y ninguna puede hacer fallar
+     * la traduccion: lo que no se pueda leer deja el detalle vacio y la respuesta se cierra igual.
+     * Sin esto, un Keycloak detras de un proxy que devuelva HTML acabaria en un 500 propio.
+     */
+    @Test
+    void theErrorBodyIsReadInItsTwoShapesAndNeverThrows() {
+        assertNull(KeycloakAdminClientGateway.readError(null));
+
+        Response noEntity = mock(Response.class);
+        when(noEntity.hasEntity()).thenReturn(false);
+        assertNull(KeycloakAdminClientGateway.readError(noEntity));
+        verify(noEntity).close();
+
+        Response unreadable = mock(Response.class);
+        when(unreadable.hasEntity()).thenReturn(true);
+        when(unreadable.readEntity(Map.class)).thenThrow(new ProcessingException("no es JSON"));
+        assertNull(KeycloakAdminClientGateway.readError(unreadable));
+        verify(unreadable).close();
+
+        Response empty = mock(Response.class);
+        when(empty.hasEntity()).thenReturn(true);
+        when(empty.readEntity(Map.class)).thenReturn(null);
+        assertNull(KeycloakAdminClientGateway.readError(empty));
+
+        assertEquals("User exists with same username",
+                KeycloakAdminClientGateway.readError(json(409, Map.of("errorMessage", "User exists with same username"))).detail());
+
+        KeycloakAdminClientGateway.KeycloakError oauth = KeycloakAdminClientGateway.readError(
+                json(400, Map.of("error", "invalid_client", "error_description", "Invalid client credentials")));
+        assertTrue(oauth.isOAuthClientError());
+        assertEquals("Invalid client credentials", oauth.detail(), "El detalle sale de error_description cuando no hay errorMessage");
+
+        KeycloakAdminClientGateway.KeycloakError other = new KeycloakAdminClientGateway.KeycloakError(null, "unknown_thing", null);
+        assertFalse(other.isOAuthClientError(), "Un 'error' que no es de cliente OAuth no acusa a la cuenta de servicio");
+        assertEquals("unknown_thing", other.detail(), "Y sin descripcion el detalle es el propio codigo");
+    }
+
     @Test
     void noAnswerIs503() {
         when(user.toRepresentation()).thenThrow(new ProcessingException(new ConnectException("Connection refused")));
 
         KeycloakUnavailableException unavailable = assertThrows(KeycloakUnavailableException.class, () -> gateway.findUser(USER_ID));
         assertTrue(unavailable.getMessage().contains("Connection refused"));
+
+        // La causa de verdad puede estar dos niveles mas abajo y no traer mensaje: entonces vale su
+        // nombre, que sigue diciendo que paso, en vez de un "null" en el 503.
+        // Re-estubar con when(...) invocaria el metodo ya estubado, que lanzaria: doThrow no.
+        doThrow(new ProcessingException(new IOException(new SocketTimeoutException()))).when(user).toRepresentation();
+        assertTrue(assertThrows(KeycloakUnavailableException.class, () -> gateway.findUser(USER_ID))
+                .getMessage().contains("SocketTimeoutException"));
     }
 
     @Test
@@ -263,6 +330,68 @@ class KeycloakAdminClientGatewayTest {
         when(clientRoles.list()).thenReturn(List.of(role("r1", "stock-read")));
 
         assertEquals("stock-read", gateway.listClientRoles("uuid-stock").getFirst().getName());
+    }
+
+    @Test
+    void roleMembersAreAskedWithoutTheBriefRepresentationAndAMissingRoleIs404() {
+        ClientResource clientResource = mock(ClientResource.class);
+        RolesResource clientRoles = mock(RolesResource.class);
+        RoleResource roleResource = mock(RoleResource.class);
+        RoleResource missing = mock(RoleResource.class);
+        when(clients.get("uuid-stock")).thenReturn(clientResource);
+        when(clientResource.roles()).thenReturn(clientRoles);
+        when(clientRoles.get("stock-read")).thenReturn(roleResource);
+        when(clientRoles.get("stock-fly")).thenReturn(missing);
+        when(roleResource.getUserMembers(false, 0, 20)).thenReturn(List.of(user("ana.uno")));
+        when(missing.getUserMembers(false, 0, 20)).thenThrow(new NotFoundException());
+
+        assertEquals("ana.uno", gateway.listClientRoleMembers("uuid-stock", "stock-read", 0, 20).getFirst().getUsername());
+        assertThrows(RoleNotFoundException.class, () -> gateway.listClientRoleMembers("uuid-stock", "stock-fly", 0, 20));
+    }
+
+    @Test
+    void realmRoleMembersUseTheSameEndpointAndAMissingRoleIsAMissingProfile() {
+        RoleResource roleResource = mock(RoleResource.class);
+        RoleResource missing = mock(RoleResource.class);
+        when(realmRoles.get("mto-users-viewer")).thenReturn(roleResource);
+        when(realmRoles.get("mto-nope")).thenReturn(missing);
+        when(roleResource.getUserMembers(false, 5, 10)).thenReturn(List.of(user("ana.uno")));
+        when(missing.getUserMembers(false, 0, 20)).thenThrow(new NotFoundException());
+
+        assertEquals(1, gateway.listRealmRoleMembers("mto-users-viewer", 5, 10).size());
+        assertThrows(ProfileNotFoundException.class, () -> gateway.listRealmRoleMembers("mto-nope", 0, 20));
+    }
+
+    @Test
+    void sessionsAreReadFromTheUserAndClosedOneByOneOnTheRealm() {
+        UserSessionRepresentation session = new UserSessionRepresentation();
+        session.setId("session-1");
+        when(user.getUserSessions()).thenReturn(List.of(session));
+
+        assertEquals("session-1", gateway.listUserSessions(USER_ID).getFirst().getId());
+
+        gateway.logoutUser(USER_ID);
+        verify(user).logout();
+
+        gateway.deleteSession("session-1");
+        verify(realm).deleteSession("session-1", false);
+    }
+
+    @Test
+    void aSessionThatIsNoLongerThereIs404AndAMissingUserKeepsBeingAUserProblem() {
+        doThrow(new NotFoundException()).when(realm).deleteSession("gone", false);
+        when(user.getUserSessions()).thenThrow(new NotFoundException());
+        doThrow(new NotFoundException()).when(user).logout();
+
+        assertThrows(SessionNotFoundException.class, () -> gateway.deleteSession("gone"));
+        assertThrows(UserNotFoundException.class, () -> gateway.listUserSessions(USER_ID));
+        assertThrows(UserNotFoundException.class, () -> gateway.logoutUser(USER_ID));
+    }
+
+    private static UserRepresentation user(String username) {
+        UserRepresentation user = new UserRepresentation();
+        user.setUsername(username);
+        return user;
     }
 
     private static KeycloakAdminProperties properties() {

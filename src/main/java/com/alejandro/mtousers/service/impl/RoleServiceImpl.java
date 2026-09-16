@@ -4,11 +4,13 @@ import com.alejandro.mtousers.configuration.keycloak.KeycloakAdminProperties;
 import com.alejandro.mtousers.dto.ClientResponse;
 import com.alejandro.mtousers.dto.ClientRoleResponse;
 import com.alejandro.mtousers.dto.RoleNamesRequest;
+import com.alejandro.mtousers.dto.UserResponse;
 import com.alejandro.mtousers.dto.UserRolesResponse;
 import com.alejandro.mtousers.exception.ProtectedClientException;
 import com.alejandro.mtousers.exception.RoleNotFoundException;
 import com.alejandro.mtousers.keycloak.KeycloakAdminGateway;
 import com.alejandro.mtousers.mapper.RoleMapper;
+import com.alejandro.mtousers.mapper.UserMapper;
 import com.alejandro.mtousers.service.AdminAuditLog;
 import com.alejandro.mtousers.service.AdminAuditLog.AdminAction;
 import com.alejandro.mtousers.service.RoleService;
@@ -33,12 +35,15 @@ class RoleServiceImpl implements RoleService {
     private final KeycloakAdminGateway keycloak;
     private final KeycloakAdminProperties properties;
     private final RoleMapper roleMapper;
+    private final UserMapper userMapper;
     private final AdminAuditLog audit;
 
-    RoleServiceImpl(KeycloakAdminGateway keycloak, KeycloakAdminProperties properties, RoleMapper roleMapper, AdminAuditLog audit) {
+    RoleServiceImpl(KeycloakAdminGateway keycloak, KeycloakAdminProperties properties, RoleMapper roleMapper,
+                    UserMapper userMapper, AdminAuditLog audit) {
         this.keycloak = keycloak;
         this.properties = properties;
         this.roleMapper = roleMapper;
+        this.userMapper = userMapper;
         this.audit = audit;
     }
 
@@ -82,6 +87,17 @@ class RoleServiceImpl implements RoleService {
         keycloak.removeClientRoles(userId, client.getId(), roles);
         audit.record(AdminAction.CLIENT_ROLES_REMOVED, userId, "client=" + clientId + " roles=" + names(roles));
         return getUserRoles(userId);
+    }
+
+    /**
+     * Quien tiene el rol <b>asignado directamente</b>. Keycloak no expande los compuestos en este
+     * endpoint: quien tenga el rol porque se lo da un perfil no sale aqui. Sin recuento, porque
+     * Keycloak no ofrece ninguno para los miembros de un rol.
+     */
+    @Override
+    public List<UserResponse> listClientRoleMembers(String clientId, String roleName, int first, int max) {
+        ClientRepresentation client = resolveClient(clientId);
+        return userMapper.toResponses(keycloak.listClientRoleMembers(client.getId(), roleName, first, max));
     }
 
     /** Un cliente protegido no existe para esta API, ni para leer ni para escribir. */

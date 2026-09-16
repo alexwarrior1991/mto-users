@@ -64,8 +64,8 @@ necesita estos roles del cliente `realm-management`:
 
 | Rol | Para qué |
 |---|---|
-| `view-users`, `query-users` | Buscar, contar y leer usuarios y sus role-mappings |
-| `manage-users` | Crear, modificar, habilitar, borrar, fijar contraseñas, enviar acciones por correo y **cambiar los role-mappings** de un usuario (realm y cliente) |
+| `view-users`, `query-users` | Buscar, contar y leer usuarios, sus role-mappings, sus sesiones y quién tiene un rol |
+| `manage-users` | Crear, modificar, habilitar, borrar, fijar contraseñas, enviar acciones por correo, cerrar sesiones y **cambiar los role-mappings** de un usuario (realm y cliente) |
 | `view-clients`, `query-clients` | Listar clientes y los roles de cada uno, resolver `clientId` → UUID |
 | `view-realm` | Leer los roles de realm (los perfiles) y sus compuestos |
 
@@ -87,10 +87,12 @@ con `errorCode` (estable), `correlationId`, `timestamp` y, en los 400 de validac
 | Situación | Estado | `errorCode` |
 |---|---|---|
 | Validación de la petición | 400 | `REQ-VALIDATION`, `REQ-400` |
+| Filtros que Keycloak no aplicaría como se pide (`search` + `attribute`, una clave de atributo repetida) | 400 | `SEARCH-400` |
 | Keycloak rechaza la petición (política de contraseñas, atributo obligatorio...) | 400 | `KC-400` |
 | Roles de un cliente protegido | 400 | `ROL-PROTECTED-CLIENT` |
 | Sin token / sin permiso | 401 / 403 | `AUTH-401` / `AUTH-403` |
 | Usuario, cliente, rol o perfil inexistente | 404 | `USR-404`, `CLI-404`, `ROL-404`, `PRF-404` |
+| Sesión inexistente, ya cerrada o de otro usuario | 404 | `SES-404` |
 | Usuario duplicado (username o email) | 409 | `USR-409` |
 | Keycloak rechaza la cuenta de servicio (secreto o roles de `realm-management`) | 502 | `KC-ACCESS` |
 | Keycloak responde con un error inesperado (500 sin SMTP, por ejemplo) | 502 | `KC-502` |
@@ -100,7 +102,8 @@ con `errorCode` (estable), `correlationId`, `timestamp` y, en los 400 de validac
 ### Auditoría y correlación
 
 Cada operación que modifica algo deja una línea en el logger `com.alejandro.mtousers.audit`:
-`action=USER_CREATED actor=usuarios.responsable actorId=<sub> targetUserId=<id> detail=...`. El
+`action=USER_CREATED actor=usuarios.responsable actorId=<sub> targetUserId=<id> detail=...`. Cerrar
+sesiones también deja la suya (`SESSION_REVOKED`, `ALL_SESSIONS_REVOKED`); las consultas no. El
 detalle son nombres de roles, perfiles o acciones; **nunca una contraseña ni un token** (los DTOs
 que llevan contraseña la ocultan en `toString()`). El identificador de correlación viaja en
 `X-Correlation-Id` —lo genera el gateway o, si falta, este servicio—, va en cada línea de log a
@@ -123,6 +126,7 @@ realm llamado como un permiso nunca lo conceda.
 | `PUT`/`DELETE /{id}/roles/clients/{clientId}` | `users-roles-write` |
 | `POST /{id}/reset-password` | `users-password-reset` |
 | `PUT`/`DELETE /{id}/profiles/{profileName}` | `users-profiles-write` |
+| `DELETE /{id}/sessions`, `DELETE /{id}/sessions/{sessionId}` | `users-sessions-write` |
 | `/actuator/health`, `/actuator/info` | abiertos |
 | resto de `/actuator/**` (lectura) | `ops-metrics` |
 | `POST`/`DELETE /actuator/**` | `ops-write` |
@@ -130,6 +134,12 @@ realm llamado como un permiso nunca lo conceda.
 Ningún permiso implica otro: `ApiAuthorizationRulesTest` lo comprueba verbo a verbo. Los perfiles
 de la plataforma que los agrupan: `mto-users-viewer` (`users-read`), `mto-users-manager` (todo menos
 borrar) y `mto-users-admin` (todo). `mto-ops` añade `users-read`, `ops-metrics` y `ops-write`.
+
+Cerrar sesiones tiene permiso propio, `users-sessions-write`, y no lo dan ni `users-write` ni
+`users-delete`: echar a todo el mundo de la aplicación no se parece a editar una ficha, y quien
+administra datos no tiene por qué poder hacerlo. Las sesiones cuelgan de dos segmentos
+(`/{id}/sessions/{sessionId}`), así que la regla de `DELETE` del usuario —que cubre uno— no las
+alcanzaba: llevan sus dos `requestMatchers` explícitos, por delante de ella.
 
 ---
 
@@ -143,7 +153,7 @@ que es el valor del perfil `dev`).
 
 | Método y ruta | Qué hace |
 |---|---|
-| `GET /api/v1/users?search&username&email&enabled&emailVerified&first=0&max=20` | Búsqueda paginada por desplazamiento (`max` ≤ 200). `search` mira username, email, nombre y apellidos; `enabled` y `emailVerified` se combinan con cualquiera. Respuesta: `{content, first, max, total}` |
+| `GET /api/v1/users?search&username&email&enabled&emailVerified&attribute&first=0&max=20` | Búsqueda paginada por desplazamiento (`max` ≤ 200). `search` mira username, email, nombre y apellidos; `enabled` y `emailVerified` se combinan con cualquiera; `attribute` se repite para filtrar por atributos (`?attribute=departamento:taller`). Respuesta: `{content, first, max, total}` |
 | `POST /api/v1/users` | Alta. `201` + `Location`. Opcionales `temporaryPassword` (Keycloak obliga a cambiarla al entrar) y `requiredActions`. Habilitado salvo `enabled=false` |
 | `GET /api/v1/users/{userId}` | Detalle |
 | `PUT /api/v1/users/{userId}` | Datos básicos (`firstName`, `lastName`, `email`, `emailVerified`, `attributes`). Lo que no viene se conserva |
@@ -151,6 +161,9 @@ que es el valor del perfil `dev`).
 | `DELETE /api/v1/users/{userId}` | `204` |
 | `POST /api/v1/users/{userId}/reset-password` | `{"password", "temporary"}` (temporal por defecto). `204` |
 | `POST /api/v1/users/{userId}/execute-actions-email` | `{"actions": [...], "lifespanSeconds"?, "clientId"?, "redirectUri"?}`. `202`. Necesita SMTP en el realm |
+| `GET /api/v1/users/{userId}/sessions` | Sesiones abiertas: `[{id, username, ipAddress, startedAt, lastAccessAt, clients}]` |
+| `DELETE /api/v1/users/{userId}/sessions` | Cierra todas. `204`, idempotente |
+| `DELETE /api/v1/users/{userId}/sessions/{sessionId}` | Cierra una. `204`; `404 SES-404` si esa sesión no es de ese usuario |
 
 ### Roles
 
@@ -158,6 +171,7 @@ que es el valor del perfil `dev`).
 |---|---|
 | `GET /api/v1/users/roles/clients` | Clientes cuyos roles se pueden asignar (los protegidos no aparecen) |
 | `GET /api/v1/users/roles/clients/{clientId}` | Roles de un cliente |
+| `GET /api/v1/users/roles/clients/{clientId}/{roleName}/users?first=0&max=20` | Quién tiene ese rol de cliente, **asignado directamente** |
 | `GET /api/v1/users/{userId}/roles` | Roles asignados **directamente**: `{realmRoles, clientRoles: [{clientId, roles}]}` |
 | `PUT /api/v1/users/{userId}/roles/clients/{clientId}` | `{"roles": [...]}`. Añade; devuelve las asignaciones actualizadas |
 | `DELETE /api/v1/users/{userId}/roles/clients/{clientId}` | `{"roles": [...]}` en el cuerpo. Quita; devuelve las asignaciones actualizadas |
@@ -168,6 +182,7 @@ que es el valor del perfil `dev`).
 |---|---|
 | `GET /api/v1/users/profiles` | Perfiles de la plataforma (roles de realm `mto-*`) |
 | `GET /api/v1/users/profiles/{profileName}` | Qué concede: `{name, description, clientRoles: [{clientId, roles}], realmRoles}` |
+| `GET /api/v1/users/profiles/{profileName}/users?first=0&max=20` | Quién tiene ese perfil |
 | `GET /api/v1/users/{userId}/profiles` | Perfiles del usuario |
 | `PUT /api/v1/users/{userId}/profiles/{profileName}` | Asigna (idempotente); devuelve los perfiles del usuario |
 | `DELETE /api/v1/users/{userId}/profiles/{profileName}` | Quita; devuelve los perfiles del usuario |
@@ -184,6 +199,50 @@ responde 200 y el atributo no existe. El realm de `mto-platform` lo activa con
 usuario), y el realm de `KeycloakUsersIT` lleva la misma configuración, que es lo que prueba que el
 ida y vuelta funciona. En un realm que no la tenga, este campo no hace nada: se quita la política y
 se quitan los atributos.
+
+### Búsqueda por atributo
+
+`?attribute=clave:valor`, repetible. Viaja al parámetro `q` de la Admin API, que compara el valor
+exacto (no hay `contains` ni comodines) y combina con **Y** las claves distintas: `?attribute=
+departamento:taller&attribute=turno:noche` devuelve a quien cumpla las dos. El `total` de la página
+se cuenta con el mismo filtro, no sobre el realm entero.
+
+Dos combinaciones se rechazan con `400 SEARCH-400` en vez de pasarlas al servidor, porque allí el
+filtro desaparece sin dejar rastro y la respuesta parece correcta:
+
+- **`search` + `attribute`**: con los dos presentes Keycloak aplica `search` y descarta `q` entero,
+  de modo que la búsqueda devolvería usuarios que no tienen ese atributo. Para acotar además por
+  identidad están `username` y `email`, que sí se combinan.
+- **la misma clave repetida** (`?attribute=departamento:taller&attribute=departamento:obra`):
+  Keycloak parsea `q` a un mapa, así que solo sobrevive el último par y el otro filtro se pierde.
+
+Como el filtro es por atributos, hace falta que el realm los guarde: ver el apartado anterior.
+
+### Búsqueda inversa: quién tiene un perfil o un rol
+
+`GET /profiles/{profileName}/users` y `GET /roles/clients/{clientId}/{roleName}/users` responden la
+pregunta contraria a la de siempre. Las dos devuelven una lista plana de usuarios —el mismo
+`UserResponse` de la búsqueda— paginada con `first`/`max`.
+
+Keycloak devuelve **solo asignaciones directas y no expande los compuestos**, y eso se nota justo
+donde el modelo de perfiles lo usa: quien tiene `stock-read` porque le asignaron el perfil
+`mto-warehouse-viewer` aparece en la lista del perfil, no en la del rol. La lista de un rol de
+cliente dice quién lo tiene *suelto*; para «quién puede leer el almacén» hay que mirar los perfiles
+que lo conceden. Los clientes protegidos tampoco se listan aquí (`400 ROLE-PROTECTED-CLIENT`).
+
+### Sesiones
+
+`GET /{userId}/sessions` lista lo que Keycloak tiene abierto ahora mismo para ese usuario, con la
+hora de inicio, la del último acceso, la IP y los clientes por los que ha pasado (el `clientId`, no
+el UUID interno). `DELETE /{userId}/sessions` las cierra todas y es idempotente; `DELETE
+/{userId}/sessions/{sessionId}` cierra una.
+
+Deshabilitar a alguien **no cierra lo que ya tenía abierto**: su token sigue siendo válido hasta que
+caduque. Dar de baja de verdad son las dos cosas, `PATCH /enabled` y `DELETE /sessions`.
+
+Cerrar una sesión suelta comprueba antes que sea de ese usuario y responde `404 SES-404` si no lo
+es. No es una comprobación de cortesía: el endpoint de Keycloak que borra una sesión cuelga del
+realm y no del usuario, así que sin ella un id ajeno —de otra persona— se cerraría igual.
 
 ### Ejemplos con curl
 
@@ -239,6 +298,20 @@ curl -s -H "Authorization: Bearer $TOKEN" "$BASE/profiles" | jq
 curl -s -H "Authorization: Bearer $TOKEN" "$BASE/profiles/mto-maintenance-manager" | jq
 curl -s -X PUT "$BASE/$USER_ID/profiles/mto-warehouse-viewer" -H "Authorization: Bearer $TOKEN" | jq
 curl -s -X DELETE "$BASE/$USER_ID/profiles/mto-warehouse-viewer" -H "Authorization: Bearer $TOKEN" | jq
+
+# Búsqueda por atributo (repetible; 400 si se mezcla con search o si se repite la clave)
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "$BASE?attribute=departamento:operaciones&attribute=turno:noche&max=50" | jq '.content[].username'
+
+# Búsqueda inversa: quién tiene el perfil y quién tiene el rol suelto
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/profiles/mto-warehouse-viewer/users" | jq '.[].username'
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/roles/clients/mto-stock-api/stock-read/users?max=50" | jq '.[].username'
+
+# Sesiones: ver, cerrar una y cerrar todas
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/$USER_ID/sessions" | jq
+SESSION_ID=$(curl -s -H "Authorization: Bearer $TOKEN" "$BASE/$USER_ID/sessions" | jq -r '.[0].id')
+curl -s -o /dev/null -w "%{http_code}\n" -X DELETE "$BASE/$USER_ID/sessions/$SESSION_ID" -H "Authorization: Bearer $TOKEN"
+curl -s -o /dev/null -w "%{http_code}\n" -X DELETE "$BASE/$USER_ID/sessions" -H "Authorization: Bearer $TOKEN"
 
 # Borrar
 curl -s -o /dev/null -w "%{http_code}\n" -X DELETE "$BASE/$USER_ID" -H "Authorization: Bearer $TOKEN"
@@ -354,8 +427,10 @@ Una clase por capa: `SecurityLayerTest` (conversor de claims, audiencia, propert
 recursos simulada), `BusinessLayerTest` (servicios y auditoría), `MapperLayerTest`,
 `RestControllerLayerTest` (contrato JSON y `problem+json`), `GlobalExceptionHandlerTest`,
 `DtoValidationTest`, `MtoUsersApplicationTests` (el contexto entero sin Keycloak escuchando) y
-`KeycloakUsersIT` (el ciclo de vida completo contra un Keycloak real: comprueba que los seis roles de
-`realm-management` bastan y que un perfil llega expandido en el token).
+`KeycloakUsersIT` (contra un Keycloak real: el ciclo de vida completo, que los seis roles de
+`realm-management` bastan, que un perfil llega expandido en el token, que el filtro por atributo
+combina con Y las claves distintas, que la lista de miembros de un rol no expande los compuestos y
+que un login abre una sesión que la API cierra).
 
 ---
 

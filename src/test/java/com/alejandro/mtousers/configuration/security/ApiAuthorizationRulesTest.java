@@ -121,6 +121,8 @@ class ApiAuthorizationRulesTest {
             mockMvc.perform(delete(USER)).andExpect(status().isUnauthorized());
             mockMvc.perform(get(USERS + "/profiles")).andExpect(status().isUnauthorized());
             mockMvc.perform(get(USERS + "/roles/clients")).andExpect(status().isUnauthorized());
+            mockMvc.perform(get(USER + "/sessions")).andExpect(status().isUnauthorized());
+            mockMvc.perform(delete(USER + "/sessions")).andExpect(status().isUnauthorized());
         }
 
         @Test
@@ -152,6 +154,13 @@ class ApiAuthorizationRulesTest {
     class WithReadRole {
 
         @Test
+        void readingCoversTheReverseLookupsAndTheSessions() throws Exception {
+            mockMvc.perform(get(USERS + "/profiles/mto-users-admin/users").with(role(SecurityRoles.USERS_READ))).andExpect(status().isOk());
+            mockMvc.perform(get(USERS + "/roles/clients/mto-stock-api/stock-read/users").with(role(SecurityRoles.USERS_READ))).andExpect(status().isOk());
+            mockMvc.perform(get(USER + "/sessions").with(role(SecurityRoles.USERS_READ))).andExpect(status().isOk());
+        }
+
+        @Test
         void readingSucceedsOnEveryCatalogueAndOnUsers() throws Exception {
             mockMvc.perform(get(USERS).with(role(SecurityRoles.USERS_READ))).andExpect(status().isOk());
             mockMvc.perform(get(USER).with(role(SecurityRoles.USERS_READ))).andExpect(status().isOk());
@@ -176,6 +185,8 @@ class ApiAuthorizationRulesTest {
             mockMvc.perform(json(post(USER + "/reset-password"), "{\"password\":\"Secreta.123\"}").with(role(SecurityRoles.USERS_READ))).andExpect(status().isForbidden());
             mockMvc.perform(json(put(USER + "/roles/clients/mto-stock-api"), ROLES_JSON).with(role(SecurityRoles.USERS_READ))).andExpect(status().isForbidden());
             mockMvc.perform(put(USER + "/profiles/mto-users-viewer").with(role(SecurityRoles.USERS_READ))).andExpect(status().isForbidden());
+            mockMvc.perform(delete(USER + "/sessions").with(role(SecurityRoles.USERS_READ))).andExpect(status().isForbidden());
+            mockMvc.perform(delete(USER + "/sessions/abc").with(role(SecurityRoles.USERS_READ))).andExpect(status().isForbidden());
         }
     }
 
@@ -200,6 +211,7 @@ class ApiAuthorizationRulesTest {
             mockMvc.perform(json(delete(USER + "/roles/clients/mto-stock-api"), ROLES_JSON).with(role(SecurityRoles.USERS_WRITE))).andExpect(status().isForbidden());
             mockMvc.perform(put(USER + "/profiles/mto-users-viewer").with(role(SecurityRoles.USERS_WRITE))).andExpect(status().isForbidden());
             mockMvc.perform(delete(USER + "/profiles/mto-users-viewer").with(role(SecurityRoles.USERS_WRITE))).andExpect(status().isForbidden());
+            mockMvc.perform(delete(USER + "/sessions").with(role(SecurityRoles.USERS_WRITE))).andExpect(status().isForbidden());
         }
     }
 
@@ -237,6 +249,21 @@ class ApiAuthorizationRulesTest {
             mockMvc.perform(delete(USER + "/profiles/mto-users-viewer").with(role(SecurityRoles.USERS_PROFILES_WRITE))).andExpect(status().isOk());
             mockMvc.perform(json(put(USER + "/roles/clients/mto-stock-api"), ROLES_JSON).with(role(SecurityRoles.USERS_PROFILES_WRITE))).andExpect(status().isForbidden());
             mockMvc.perform(delete(USER).with(role(SecurityRoles.USERS_PROFILES_WRITE))).andExpect(status().isForbidden());
+        }
+
+        /**
+         * Cerrar sesiones expulsa a alguien que esta trabajando, asi que va aparte: ni el borrado de
+         * usuarios ni la escritura ordinaria lo conceden, y el permiso no abre ninguna otra puerta.
+         */
+        @Test
+        void closingSessionsNeedsItsOwnRoleAndGrantsNothingElse() throws Exception {
+            mockMvc.perform(delete(USER + "/sessions").with(role(SecurityRoles.USERS_SESSIONS_WRITE))).andExpect(status().isNoContent());
+            mockMvc.perform(delete(USER + "/sessions/abc").with(role(SecurityRoles.USERS_SESSIONS_WRITE))).andExpect(status().isNoContent());
+
+            mockMvc.perform(delete(USER + "/sessions").with(role(SecurityRoles.USERS_DELETE))).andExpect(status().isForbidden());
+            mockMvc.perform(get(USER + "/sessions").with(role(SecurityRoles.USERS_SESSIONS_WRITE))).andExpect(status().isForbidden());
+            mockMvc.perform(delete(USER).with(role(SecurityRoles.USERS_SESSIONS_WRITE))).andExpect(status().isForbidden());
+            mockMvc.perform(json(post(USERS), USER_JSON).with(role(SecurityRoles.USERS_SESSIONS_WRITE))).andExpect(status().isForbidden());
         }
 
         /**

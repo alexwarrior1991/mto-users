@@ -8,6 +8,8 @@ import com.alejandro.mtousers.exception.KeycloakRequestException;
 import com.alejandro.mtousers.exception.KeycloakUnavailableException;
 import com.alejandro.mtousers.exception.KeycloakUpstreamException;
 import com.alejandro.mtousers.exception.ProfileNotFoundException;
+import com.alejandro.mtousers.exception.RoleNotFoundException;
+import com.alejandro.mtousers.exception.SessionNotFoundException;
 import com.alejandro.mtousers.exception.UserAlreadyExistsException;
 import com.alejandro.mtousers.exception.UserNotFoundException;
 import com.alejandro.mtousers.exception.UsersException;
@@ -25,6 +27,7 @@ import org.keycloak.representations.idm.CredentialRepresentation;
 import org.keycloak.representations.idm.MappingsRepresentation;
 import org.keycloak.representations.idm.RoleRepresentation;
 import org.keycloak.representations.idm.UserRepresentation;
+import org.keycloak.representations.idm.UserSessionRepresentation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -70,14 +73,15 @@ public class KeycloakAdminClientGateway implements KeycloakAdminGateway {
     public List<UserRepresentation> searchUsers(UserSearchCriteria criteria) {
         return call("search users", () -> usersQuery.search(
                 blankToNull(criteria.search()), blankToNull(criteria.username()), blankToNull(criteria.email()),
-                criteria.enabled(), criteria.emailVerified(), criteria.first(), criteria.max(), false));
+                criteria.enabled(), criteria.emailVerified(), criteria.attributeQuery(),
+                criteria.first(), criteria.max(), false));
     }
 
     @Override
     public int countUsers(UserSearchCriteria criteria) {
         Integer count = call("count users", () -> usersQuery.count(
                 blankToNull(criteria.search()), blankToNull(criteria.username()), blankToNull(criteria.email()),
-                criteria.enabled(), criteria.emailVerified()));
+                criteria.enabled(), criteria.emailVerified(), criteria.attributeQuery()));
         return count == null ? 0 : count;
     }
 
@@ -178,6 +182,18 @@ public class KeycloakAdminClientGateway implements KeycloakAdminGateway {
     }
 
     @Override
+    public List<UserRepresentation> listClientRoleMembers(String clientUuid, String roleName, int first, int max) {
+        return call("list members of client role " + roleName, () -> {
+            try {
+                return realm.clients().get(clientUuid).roles().get(roleName).getUserMembers(false, first, max);
+            } catch (NotFoundException notFound) {
+                // El cliente se ha resuelto antes de llegar aqui, asi que lo que falta es el rol.
+                throw new RoleNotFoundException(clientUuid, List.of(roleName));
+            }
+        });
+    }
+
+    @Override
     public MappingsRepresentation getUserRoleMappings(String userId) {
         return call("read role mappings of user " + userId, () -> {
             try {
@@ -228,6 +244,17 @@ public class KeycloakAdminClientGateway implements KeycloakAdminGateway {
     }
 
     @Override
+    public List<UserRepresentation> listRealmRoleMembers(String roleName, int first, int max) {
+        return call("list members of realm role " + roleName, () -> {
+            try {
+                return realm.roles().get(roleName).getUserMembers(false, first, max);
+            } catch (NotFoundException notFound) {
+                throw new ProfileNotFoundException(roleName);
+            }
+        });
+    }
+
+    @Override
     public Set<RoleRepresentation> getRealmRoleComposites(String roleName) {
         return call("read composites of realm role " + roleName, () -> {
             try {
@@ -267,6 +294,44 @@ public class KeycloakAdminClientGateway implements KeycloakAdminGateway {
                 realm.users().get(userId).roles().realmLevel().remove(roles);
             } catch (NotFoundException notFound) {
                 throw new UserNotFoundException(userId);
+            }
+        });
+    }
+
+    @Override
+    public List<UserSessionRepresentation> listUserSessions(String userId) {
+        return call("list sessions of user " + userId, () -> {
+            try {
+                return realm.users().get(userId).getUserSessions();
+            } catch (NotFoundException notFound) {
+                throw new UserNotFoundException(userId);
+            }
+        });
+    }
+
+    @Override
+    public void logoutUser(String userId) {
+        run("log out user " + userId, () -> {
+            try {
+                realm.users().get(userId).logout();
+            } catch (NotFoundException notFound) {
+                throw new UserNotFoundException(userId);
+            }
+        });
+    }
+
+    /**
+     * El endpoint es del realm ({@code DELETE /sessions/{id}}) y no del usuario: quien llama tiene
+     * que haber comprobado antes que la sesion es de ese usuario, o estaria cerrando la de otro.
+     * Lo hace {@code UserServiceImpl}.
+     */
+    @Override
+    public void deleteSession(String sessionId) {
+        run("delete session " + sessionId, () -> {
+            try {
+                realm.deleteSession(sessionId, false);
+            } catch (NotFoundException notFound) {
+                throw new SessionNotFoundException(sessionId);
             }
         });
     }

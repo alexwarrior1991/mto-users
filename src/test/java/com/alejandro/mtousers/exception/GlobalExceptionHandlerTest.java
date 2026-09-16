@@ -1,9 +1,15 @@
 package com.alejandro.mtousers.exception;
 
 import com.alejandro.mtousers.configuration.web.CorrelationIdFilter;
+import jakarta.validation.ConstraintViolation;
+import jakarta.validation.ConstraintViolationException;
+import jakarta.validation.Path;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.config.BeanDefinition;
+import org.springframework.context.annotation.ClassPathScanningCandidateComponentProvider;
+import org.springframework.core.type.filter.AssignableTypeFilter;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -12,15 +18,23 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class GlobalExceptionHandlerTest {
 
@@ -29,6 +43,71 @@ class GlobalExceptionHandlerTest {
     @AfterEach
     void clearMdc() {
         MDC.clear();
+    }
+
+    /**
+     * El handler de {@link UsersException} es una red de seguridad que responde 422. Si una
+     * excepción nueva se queda solo con él, la API contesta 422 donde quería contestar 404 o 400 y
+     * el test de la clase no lo ve, porque llamar al método a mano acierta igual: lo que decide es
+     * la lista de {@code @ExceptionHandler}. Por eso cada subclase tiene que estar nombrada.
+     */
+    /**
+     * Dos handlers que hoy no dispara nadie por MVC —la validación de parámetros llega como
+     * {@code HandlerMethodValidationException} desde Spring 6, y ningún endpoint declara un
+     * parámetro obligatorio sin valor por defecto— pero que siguen ahí porque un
+     * {@code @RequestParam} obligatorio o un {@code @Validated} en un servicio los despiertan sin
+     * avisar. Si van a existir, que sea con el cuerpo del contrato y no con un 500.
+     */
+    @Test
+    void theDefensiveValidationHandlersKeepTheSameContract() {
+        MockHttpServletRequest request = request("GET", "/api/v1/users");
+
+        ResponseEntity<ProblemDetail> missing = handler.handleMissingParameter(
+                new MissingServletRequestParameterException("clientId", "String"), request);
+        assertEquals(HttpStatus.BAD_REQUEST, missing.getStatusCode());
+        assertEquals("REQ-400", codeOf(missing));
+        assertEquals(List.of(new ValidationError("clientId", "is required")), validationErrorsOf(missing));
+
+        ResponseEntity<ProblemDetail> violations = handler.handleConstraintViolation(
+                new ConstraintViolationException(Set.of(violation("search", "must not be blank"))), request);
+        assertEquals(HttpStatus.BAD_REQUEST, violations.getStatusCode());
+        assertEquals("REQ-VALIDATION", codeOf(violations));
+        assertEquals(List.of(new ValidationError("search", "must not be blank")), validationErrorsOf(violations));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<ValidationError> validationErrorsOf(ResponseEntity<ProblemDetail> response) {
+        return (List<ValidationError>) response.getBody().getProperties().get("validationErrors");
+    }
+
+    private static ConstraintViolation<?> violation(String path, String message) {
+        ConstraintViolation<?> violation = mock(ConstraintViolation.class);
+        Path propertyPath = mock(Path.class);
+        when(propertyPath.toString()).thenReturn(path);
+        when(violation.getPropertyPath()).thenReturn(propertyPath);
+        when(violation.getMessage()).thenReturn(message);
+        return violation;
+    }
+
+    @Test
+    void everyBusinessExceptionIsRoutedByItsOwnHandlerAndNotByTheCatchAll() {
+        Set<String> routed = Arrays.stream(GlobalExceptionHandler.class.getDeclaredMethods())
+                .map(method -> method.getAnnotation(ExceptionHandler.class))
+                .filter(Objects::nonNull)
+                .flatMap(annotation -> Arrays.stream(annotation.value()))
+                .filter(type -> type != UsersException.class)
+                .map(Class::getName)
+                .collect(Collectors.toSet());
+
+        ClassPathScanningCandidateComponentProvider scanner = new ClassPathScanningCandidateComponentProvider(false);
+        scanner.addIncludeFilter(new AssignableTypeFilter(UsersException.class));
+        List<String> unrouted = scanner.findCandidateComponents(UsersException.class.getPackageName()).stream()
+                .map(BeanDefinition::getBeanClassName)
+                .filter(name -> !routed.contains(name))
+                .sorted()
+                .toList();
+
+        assertEquals(List.of(), unrouted, "Les falta su propio @ExceptionHandler y caerían en el 422 genérico");
     }
 
     @Test
@@ -64,6 +143,10 @@ class GlobalExceptionHandlerTest {
         assertEquals(HttpStatus.BAD_REQUEST, handler.handleBadRequest(new ProtectedClientException("realm-management"), request).getStatusCode());
         assertEquals("ROL-PROTECTED-CLIENT", codeOf(handler.handleBadRequest(new ProtectedClientException("realm-management"), request)));
         assertEquals("KC-400", codeOf(handler.handleBadRequest(new KeycloakRequestException("bad"), request)));
+        assertEquals(HttpStatus.BAD_REQUEST, handler.handleBadRequest(new InvalidSearchException("no"), request).getStatusCode());
+        assertEquals("SEARCH-400", codeOf(handler.handleBadRequest(new InvalidSearchException("no"), request)));
+        assertEquals(HttpStatus.NOT_FOUND, handler.handleNotFound(new SessionNotFoundException("s"), request).getStatusCode());
+        assertEquals("SES-404", codeOf(handler.handleNotFound(new SessionNotFoundException("s"), request)));
         assertEquals(HttpStatus.BAD_GATEWAY, handler.handleKeycloakAccess(new KeycloakAccessException("nope", null), request).getStatusCode());
         assertEquals("KC-ACCESS", codeOf(handler.handleKeycloakAccess(new KeycloakAccessException("nope", null), request)));
         assertEquals(HttpStatus.BAD_GATEWAY, handler.handleKeycloakUpstream(new KeycloakUpstreamException("boom", null), request).getStatusCode());

@@ -15,10 +15,14 @@ import com.alejandro.mtousers.dto.RoleNamesRequest;
 import com.alejandro.mtousers.dto.UserResponse;
 import com.alejandro.mtousers.dto.UserRolesResponse;
 import com.alejandro.mtousers.dto.UserSearchCriteria;
+import com.alejandro.mtousers.dto.UserSessionResponse;
 import com.alejandro.mtousers.exception.GlobalExceptionHandler;
+import com.alejandro.mtousers.exception.InvalidSearchException;
 import com.alejandro.mtousers.exception.KeycloakUnavailableException;
+import com.alejandro.mtousers.exception.SessionNotFoundException;
 import com.alejandro.mtousers.exception.UserAlreadyExistsException;
 import com.alejandro.mtousers.exception.UserNotFoundException;
+import com.alejandro.mtousers.exception.UsersException;
 import com.alejandro.mtousers.service.ProfileService;
 import com.alejandro.mtousers.service.RoleService;
 import com.alejandro.mtousers.service.UserService;
@@ -45,12 +49,15 @@ import static org.hamcrest.Matchers.hasItems;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -107,7 +114,82 @@ class RestControllerLayerTest {
                 .andExpect(jsonPath("$.total").value(1))
                 .andExpect(header().exists("X-Correlation-Id"));
 
-        verify(userService).search(new UserSearchCriteria("ana", null, null, true, null, 0, 20));
+        verify(userService).search(new UserSearchCriteria("ana", null, null, true, null, List.of(), 0, 20));
+    }
+
+    @Test
+    void attributeFiltersTravelAsARepeatedParameter() throws Exception {
+        when(userService.search(any())).thenReturn(new PageResponse<>(List.of(user("ops.uno")), 0, 20, 1));
+
+        mockMvc.perform(get(USERS).param("attribute", "departamento:operaciones").param("attribute", "turno:noche").with(admin()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content[0].username").value("ops.uno"));
+
+        verify(userService).search(new UserSearchCriteria(null, null, null, null, null,
+                List.of("departamento:operaciones", "turno:noche"), 0, 20));
+    }
+
+    @Test
+    void anAttributeThatIsNotKeyValueIsRejectedBeforeReachingKeycloak() throws Exception {
+        mockMvc.perform(get(USERS).param("attribute", "sin-dos-puntos").with(admin()))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("REQ-VALIDATION"));
+
+        verify(userService, never()).search(any());
+    }
+
+    @Test
+    void combiningTextSearchAndAttributeAnswers400WithItsOwnCode() throws Exception {
+        when(userService.search(any())).thenThrow(new InvalidSearchException("'search' and 'attribute' cannot be combined"));
+
+        mockMvc.perform(get(USERS).param("search", "ana").param("attribute", "departamento:ops").with(admin()))
+                .andExpect(status().isBadRequest())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.errorCode").value("SEARCH-400"));
+    }
+
+    @Test
+    void sessionsAreListedAndClosed() throws Exception {
+        when(userService.listSessions(USER_ID)).thenReturn(List.of(new UserSessionResponse(
+                "session-1", "ana.uno", "10.0.0.9", Instant.EPOCH, Instant.EPOCH.plusSeconds(60), List.of("mto-frontend"))));
+
+        mockMvc.perform(get(USERS + "/" + USER_ID + "/sessions").with(admin()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].id").value("session-1"))
+                .andExpect(jsonPath("$[0].ipAddress").value("10.0.0.9"))
+                .andExpect(jsonPath("$[0].startedAt").value("1970-01-01T00:00:00Z"))
+                .andExpect(jsonPath("$[0].clients[0]").value("mto-frontend"));
+
+        mockMvc.perform(delete(USERS + "/" + USER_ID + "/sessions/session-1").with(admin()))
+                .andExpect(status().isNoContent());
+        mockMvc.perform(delete(USERS + "/" + USER_ID + "/sessions").with(admin()))
+                .andExpect(status().isNoContent());
+
+        verify(userService).revokeSession(USER_ID, "session-1");
+        verify(userService).revokeAllSessions(USER_ID);
+    }
+
+    @Test
+    void aSessionOfAnotherUserAnswers404ProblemJson() throws Exception {
+        doThrow(new SessionNotFoundException("otra")).when(userService).revokeSession(USER_ID, "otra");
+
+        mockMvc.perform(delete(USERS + "/" + USER_ID + "/sessions/otra").with(admin()))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.errorCode").value("SES-404"));
+    }
+
+    @Test
+    void theReverseLookupsAnswerAPlainListWithOffsetPagination() throws Exception {
+        when(profileService.listProfileMembers("mto-users-admin", 0, 20)).thenReturn(List.of(user("usuarios.responsable")));
+        when(roleService.listClientRoleMembers("mto-stock-api", "stock-read", 10, 5)).thenReturn(List.of(user("almacen.lector")));
+
+        mockMvc.perform(get(USERS + "/profiles/mto-users-admin/users").with(admin()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].username").value("usuarios.responsable"));
+        mockMvc.perform(get(USERS + "/roles/clients/mto-stock-api/stock-read/users")
+                        .param("first", "10").param("max", "5").with(admin()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].username").value("almacen.lector"));
     }
 
     @Test
@@ -257,6 +339,45 @@ class RestControllerLayerTest {
         return new UserResponse(USER_ID, username, null, null, username + "@mto.local", false, true, Instant.EPOCH, Map.of(), List.of());
     }
 
+    /**
+     * Los errores que no vienen de la capa de negocio salen con el mismo cuerpo: tipo de contenido
+     * equivocado, verbo que no existe y parametro que no se puede convertir.
+     */
+    @Test
+    void theRequestFailuresThatNeverReachAServiceAreProblemJsonToo() throws Exception {
+        mockMvc.perform(post(USERS).with(admin()).contentType(MediaType.TEXT_PLAIN).content("ana"))
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.errorCode").value("REQ-415"));
+
+        mockMvc.perform(patch(USERS).with(admin()).contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isMethodNotAllowed())
+                .andExpect(jsonPath("$.errorCode").value("REQ-405"));
+
+        mockMvc.perform(get(USERS).param("enabled", "quizas").with(admin()))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("REQ-400"))
+                .andExpect(jsonPath("$.validationErrors[0].field").value("enabled"));
+
+        verifyNoInteractions(userService);
+    }
+
+    /**
+     * La red de seguridad de {@code UsersException}: una excepcion de negocio sin handler propio
+     * sale como 422 con su codigo, no como un 500 sin contexto. Que ninguna de las que existen
+     * llegue aqui lo vigila {@code GlobalExceptionHandlerTest}.
+     */
+    @Test
+    void aBusinessExceptionWithoutItsOwnHandlerFallsBackTo422() throws Exception {
+        when(userService.get(USER_ID)).thenThrow(new UsersException("USR-999", "algo que no encaja") {
+        });
+
+        mockMvc.perform(get(USERS + "/" + USER_ID).with(admin()))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.errorCode").value("USR-999"));
+    }
+
     private static RequestPostProcessor admin() {
         return jwt().authorities(AuthorityUtils.createAuthorityList(
                 SecurityAuthorityPrefixes.ROLE_PREFIX + SecurityRoles.USERS_READ,
@@ -264,6 +385,7 @@ class RestControllerLayerTest {
                 SecurityAuthorityPrefixes.ROLE_PREFIX + SecurityRoles.USERS_DELETE,
                 SecurityAuthorityPrefixes.ROLE_PREFIX + SecurityRoles.USERS_ROLES_WRITE,
                 SecurityAuthorityPrefixes.ROLE_PREFIX + SecurityRoles.USERS_PASSWORD_RESET,
-                SecurityAuthorityPrefixes.ROLE_PREFIX + SecurityRoles.USERS_PROFILES_WRITE));
+                SecurityAuthorityPrefixes.ROLE_PREFIX + SecurityRoles.USERS_PROFILES_WRITE,
+                SecurityAuthorityPrefixes.ROLE_PREFIX + SecurityRoles.USERS_SESSIONS_WRITE));
     }
 }

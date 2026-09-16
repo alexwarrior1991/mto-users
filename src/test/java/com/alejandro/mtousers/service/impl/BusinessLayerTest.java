@@ -19,9 +19,11 @@ import com.alejandro.mtousers.dto.UpdateUserRequest;
 import com.alejandro.mtousers.dto.UserResponse;
 import com.alejandro.mtousers.dto.UserRolesResponse;
 import com.alejandro.mtousers.dto.UserSearchCriteria;
+import com.alejandro.mtousers.exception.InvalidSearchException;
 import com.alejandro.mtousers.exception.ProfileNotFoundException;
 import com.alejandro.mtousers.exception.ProtectedClientException;
 import com.alejandro.mtousers.exception.RoleNotFoundException;
+import com.alejandro.mtousers.exception.SessionNotFoundException;
 import com.alejandro.mtousers.keycloak.KeycloakAdminGateway;
 import com.alejandro.mtousers.mapper.ProfileMapper;
 import com.alejandro.mtousers.mapper.RoleMapper;
@@ -35,11 +37,13 @@ import org.keycloak.representations.idm.ClientRepresentation;
 import org.keycloak.representations.idm.MappingsRepresentation;
 import org.keycloak.representations.idm.RoleRepresentation;
 import org.keycloak.representations.idm.UserRepresentation;
+import org.keycloak.representations.idm.UserSessionRepresentation;
 import org.mapstruct.factory.Mappers;
 import org.mockito.ArgumentCaptor;
 import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -70,9 +74,11 @@ class BusinessLayerTest {
     private final ListAppender<ILoggingEvent> auditLines = new ListAppender<>();
 
     private final UserServiceImpl userService = new UserServiceImpl(keycloak, Mappers.getMapper(UserMapper.class), audit);
-    private final RoleServiceImpl roleService = new RoleServiceImpl(keycloak, keycloakProperties(), Mappers.getMapper(RoleMapper.class), audit);
+    private final RoleServiceImpl roleService = new RoleServiceImpl(keycloak, keycloakProperties(),
+            Mappers.getMapper(RoleMapper.class), Mappers.getMapper(UserMapper.class), audit);
     private final ProfileServiceImpl profileService = new ProfileServiceImpl(keycloak,
-            new ProfileProperties("mto-", List.of("mto-internal")), Mappers.getMapper(ProfileMapper.class), audit);
+            new ProfileProperties("mto-", List.of("mto-internal")), Mappers.getMapper(ProfileMapper.class),
+            Mappers.getMapper(UserMapper.class), audit);
 
     @BeforeEach
     void captureAuditLog() {
@@ -89,7 +95,7 @@ class BusinessLayerTest {
 
     @Test
     void searchReturnsThePageWithTheTotalFromCount() {
-        UserSearchCriteria criteria = new UserSearchCriteria("ana", null, null, true, null, 0, 20);
+        UserSearchCriteria criteria = new UserSearchCriteria("ana", null, null, true, null, null, 0, 20);
         when(keycloak.searchUsers(criteria)).thenReturn(List.of(user("ana.uno"), user("ana.dos")));
         when(keycloak.countUsers(criteria)).thenReturn(42);
 
@@ -99,6 +105,101 @@ class BusinessLayerTest {
         assertEquals("ana.uno", page.content().getFirst().username());
         assertEquals(42, page.total());
         assertEquals(20, page.max());
+    }
+
+    /**
+     * Keycloak descarta 'q' cuando llega con 'search', asi que la combinacion devolveria usuarios
+     * que no tienen el atributo pedido. Se corta antes de preguntar.
+     */
+    @Test
+    void searchingByTextAndByAttributeAtOnceIsRejectedInsteadOfAnsweringSomethingElse() {
+        UserSearchCriteria both = new UserSearchCriteria("ana", null, null, null, null, List.of("departamento:ops"), 0, 20);
+
+        InvalidSearchException rejected = assertThrows(InvalidSearchException.class, () -> userService.search(both));
+        assertTrue(rejected.getMessage().contains("cannot be combined"));
+        verify(keycloak, never()).searchUsers(any());
+
+        // Un 'search' en blanco no cuenta como busqueda: el formulario que manda el parametro vacio
+        // no puede quedarse sin el filtro por atributo.
+        UserSearchCriteria blankSearch = new UserSearchCriteria("   ", null, null, null, null, List.of("departamento:ops"), 0, 20);
+        assertFalse(blankSearch.hasSearch());
+        when(keycloak.searchUsers(blankSearch)).thenReturn(List.of(user("ops.uno")));
+        when(keycloak.countUsers(blankSearch)).thenReturn(1);
+        assertEquals(1, userService.search(blankSearch).total());
+
+        // Cada uno por su lado si vale, y el filtro por atributo tambien con username o enabled.
+        UserSearchCriteria byAttribute = new UserSearchCriteria(null, null, null, true, null, List.of("departamento:ops"), 0, 20);
+        when(keycloak.searchUsers(byAttribute)).thenReturn(List.of(user("ops.uno")));
+        when(keycloak.countUsers(byAttribute)).thenReturn(1);
+        assertEquals("ops.uno", userService.search(byAttribute).content().getFirst().username());
+        assertEquals("departamento:ops", byAttribute.attributeQuery());
+
+        // Y dos claves distintas si se combinan: Keycloak las une con Y.
+        UserSearchCriteria twoKeys = new UserSearchCriteria(null, null, null, null, null,
+                List.of("departamento:ops", "turno:noche"), 0, 20);
+        assertEquals("departamento:ops turno:noche", twoKeys.attributeQuery());
+        assertEquals(List.of(), twoKeys.repeatedAttributeKeys());
+    }
+
+    /**
+     * Keycloak parsea {@code q} a un mapa, asi que una clave repetida pierde todos los pares menos
+     * el ultimo. Igual que con {@code search}, se rechaza en vez de contestar otra cosa.
+     */
+    @Test
+    void repeatingAnAttributeKeyIsRejectedBecauseKeycloakWouldKeepOnlyTheLastOne() {
+        UserSearchCriteria repeated = new UserSearchCriteria(null, null, null, null, null,
+                List.of("departamento:taller", "turno:noche", "departamento:obra"), 0, 20);
+        assertEquals(List.of("departamento"), repeated.repeatedAttributeKeys());
+
+        InvalidSearchException rejected = assertThrows(InvalidSearchException.class, () -> userService.search(repeated));
+        assertTrue(rejected.getMessage().contains("departamento"), rejected.getMessage());
+        assertTrue(rejected.getMessage().contains("cannot repeat a key"));
+        verify(keycloak, never()).searchUsers(any());
+        verify(keycloak, never()).countUsers(any());
+
+        // Sin ':' el termino entero es la clave. El controlador no deja pasar uno asi, pero el
+        // servicio no depende de esa validacion para no repetir filtros.
+        assertEquals(List.of("solo-clave"), new UserSearchCriteria(null, null, null, null, null,
+                List.of("solo-clave", "solo-clave"), 0, 20).repeatedAttributeKeys());
+    }
+
+    @Test
+    void sessionsAreListedMappedAndClosed() {
+        UserSessionRepresentation session = session("session-1", "10.0.0.9", Map.of("uuid-b", "mto-frontend", "uuid-a", "mto-users-api"));
+        when(keycloak.listUserSessions(USER_ID)).thenReturn(List.of(session));
+
+        var sessions = userService.listSessions(USER_ID);
+
+        assertEquals(1, sessions.size());
+        assertEquals("session-1", sessions.getFirst().id());
+        assertEquals("10.0.0.9", sessions.getFirst().ipAddress());
+        assertEquals(Instant.ofEpochMilli(1_700_000_000_000L), sessions.getFirst().startedAt());
+        assertEquals(List.of("mto-frontend", "mto-users-api"), sessions.getFirst().clients(), "Por nombre de cliente y ordenados");
+
+        userService.revokeSession(USER_ID, "session-1");
+        verify(keycloak).deleteSession("session-1");
+        assertTrue(onlyAuditLine().contains("action=SESSION_REVOKED"));
+    }
+
+    /**
+     * El endpoint de Keycloak que cierra una sesion es del realm: con el id de la sesion de otra
+     * persona cerraria la suya. Por eso se comprueba antes de quien es.
+     */
+    @Test
+    void aSessionOfAnotherUserIsNotClosedThroughThisUser() {
+        when(keycloak.listUserSessions(USER_ID)).thenReturn(List.of(session("session-1", "10.0.0.9", Map.of())));
+
+        assertThrows(SessionNotFoundException.class, () -> userService.revokeSession(USER_ID, "session-de-otro"));
+        verify(keycloak, never()).deleteSession(anyString());
+        assertEquals(0, auditLines.list.size(), "Lo que no se hizo no se audita");
+    }
+
+    @Test
+    void closingEverySessionIsIdempotentAndAudited() {
+        userService.revokeAllSessions(USER_ID);
+
+        verify(keycloak).logoutUser(USER_ID);
+        assertTrue(onlyAuditLine().contains("action=ALL_SESSIONS_REVOKED"));
     }
 
     @Test
@@ -159,6 +260,17 @@ class BusinessLayerTest {
         assertTrue(onlyAuditLine().contains("fields=lastName emailVerified"));
     }
 
+    /** La linea de auditoria enumera lo que venia en la peticion, no lo que de verdad cambio. */
+    @Test
+    void theAuditLineOfAnUpdateNamesEveryFieldThatCame() {
+        when(keycloak.findUser(USER_ID)).thenReturn(user("ana.uno"));
+
+        userService.update(USER_ID, new UpdateUserRequest("Ana", "Uno", "ana@mto.local", true,
+                Map.of("dept", List.of("ops"))));
+
+        assertTrue(onlyAuditLine().contains("fields=firstName lastName email emailVerified attributes"), onlyAuditLine());
+    }
+
     @Test
     void enablingAndDisablingOnlyTouchTheFlag() {
         UserRepresentation existing = user("ana.uno");
@@ -171,6 +283,12 @@ class BusinessLayerTest {
         verify(keycloak).updateUser(org.mockito.ArgumentMatchers.eq(USER_ID), sent.capture());
         assertEquals(Boolean.FALSE, sent.getValue().isEnabled());
         assertTrue(onlyAuditLine().contains("action=USER_DISABLED"));
+
+        userService.setEnabled(USER_ID, true);
+        verify(keycloak, org.mockito.Mockito.times(2)).updateUser(org.mockito.ArgumentMatchers.eq(USER_ID), sent.capture());
+        assertEquals(Boolean.TRUE, sent.getValue().isEnabled());
+        assertTrue(auditLines.list.getLast().getFormattedMessage().contains("action=USER_ENABLED"),
+                "Cada sentido deja su propia accion");
     }
 
     @Test
@@ -240,6 +358,32 @@ class BusinessLayerTest {
     }
 
     @Test
+    void removingRolesResolvesTheSameWayAndLeavesItsOwnAuditLine() {
+        when(keycloak.findClient("mto-stock-api")).thenReturn(client("uuid-stock", "mto-stock-api"));
+        when(keycloak.listClientRoles("uuid-stock")).thenReturn(List.of(role("r1", "stock-read"), role("r2", "stock-write")));
+
+        // Quitar pasa por las mismas puertas que anadir: cliente protegido y nombre inexistente.
+        assertThrows(ProtectedClientException.class,
+                () -> roleService.removeClientRoles(USER_ID, "realm-management", new RoleNamesRequest(List.of("realm-admin"))));
+        assertThrows(RoleNotFoundException.class,
+                () -> roleService.removeClientRoles(USER_ID, "mto-stock-api", new RoleNamesRequest(List.of("stock-fly"))));
+        verify(keycloak, never()).removeClientRoles(anyString(), anyString(), anyList());
+
+        MappingsRepresentation after = new MappingsRepresentation();
+        after.setClientMappings(Map.of("mto-stock-api", clientMappings("mto-stock-api", "stock-read")));
+        when(keycloak.getUserRoleMappings(USER_ID)).thenReturn(after);
+
+        UserRolesResponse response = roleService.removeClientRoles(USER_ID, "mto-stock-api", new RoleNamesRequest(List.of("stock-write")));
+
+        ArgumentCaptor<List<RoleRepresentation>> sent = ArgumentCaptor.captor();
+        verify(keycloak).removeClientRoles(org.mockito.ArgumentMatchers.eq(USER_ID), org.mockito.ArgumentMatchers.eq("uuid-stock"), sent.capture());
+        assertEquals(List.of("r2"), sent.getValue().stream().map(RoleRepresentation::getId).toList());
+        assertEquals(List.of(new ClientRoleAssignment("mto-stock-api", List.of("stock-read"))), response.clientRoles());
+        assertTrue(onlyAuditLine().contains("action=CLIENT_ROLES_REMOVED"));
+        assertTrue(onlyAuditLine().contains("client=mto-stock-api roles=[stock-write]"));
+    }
+
+    @Test
     void userRolesHideProtectedClientsAndKeepRealmRoles() {
         MappingsRepresentation mappings = new MappingsRepresentation();
         mappings.setRealmMappings(List.of(role("p1", "mto-users-viewer"), role("p0", "default-roles-mto")));
@@ -252,6 +396,16 @@ class BusinessLayerTest {
 
         assertEquals(List.of("default-roles-mto", "mto-users-viewer"), roles.realmRoles());
         assertEquals(List.of(new ClientRoleAssignment("mto-users-api", List.of("users-read", "users-write"))), roles.clientRoles());
+    }
+
+    @Test
+    void clientRoleMembersGoThroughTheClientAndRefuseProtectedClients() {
+        when(keycloak.findClient("mto-stock-api")).thenReturn(client("uuid-stock", "mto-stock-api"));
+        when(keycloak.listClientRoleMembers("uuid-stock", "stock-read", 0, 20)).thenReturn(List.of(user("almacen.lector")));
+
+        assertEquals(List.of("almacen.lector"),
+                roleService.listClientRoleMembers("mto-stock-api", "stock-read", 0, 20).stream().map(UserResponse::username).toList());
+        assertThrows(ProtectedClientException.class, () -> roleService.listClientRoleMembers("realm-management", "realm-admin", 0, 20));
     }
 
     // --- Perfiles ---------------------------------------------------------------------------------
@@ -311,6 +465,18 @@ class BusinessLayerTest {
         assertTrue(auditLines.list.get(1).getFormattedMessage().contains("action=PROFILE_REMOVED"));
     }
 
+    @Test
+    void profileMembersAreTheHoldersOfThatRealmRoleAndOnlyOfAProfile() {
+        when(keycloak.findRealmRole("mto-users-viewer")).thenReturn(role("p1", "mto-users-viewer"));
+        when(keycloak.listRealmRoleMembers("mto-users-viewer", 0, 20)).thenReturn(List.of(user("usuarios.lector")));
+
+        assertEquals(List.of("usuarios.lector"),
+                profileService.listProfileMembers("mto-users-viewer", 0, 20).stream().map(UserResponse::username).toList());
+
+        assertThrows(ProfileNotFoundException.class, () -> profileService.listProfileMembers("default-roles-mto", 0, 20));
+        verify(keycloak, never()).listRealmRoleMembers(org.mockito.ArgumentMatchers.eq("default-roles-mto"), org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyInt());
+    }
+
     // --- helpers ----------------------------------------------------------------------------------
 
     private String onlyAuditLine() {
@@ -323,6 +489,17 @@ class BusinessLayerTest {
     private static KeycloakAdminProperties keycloakProperties() {
         return new KeycloakAdminProperties("http://kc:8080", "mto", "mto-users-svc", "secret",
                 Duration.ofSeconds(2), Duration.ofSeconds(10), 10, List.of("realm-management", "broker"));
+    }
+
+    private static UserSessionRepresentation session(String id, String ip, Map<String, String> clients) {
+        UserSessionRepresentation session = new UserSessionRepresentation();
+        session.setId(id);
+        session.setUsername("ana.uno");
+        session.setIpAddress(ip);
+        session.setStart(1_700_000_000_000L);
+        session.setLastAccess(1_700_000_060_000L);
+        session.setClients(clients);
+        return session;
     }
 
     private static UserRepresentation user(String username) {

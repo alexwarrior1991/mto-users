@@ -3,8 +3,10 @@ package com.alejandro.mtousers.mapper;
 import com.alejandro.mtousers.dto.CreateUserRequest;
 import com.alejandro.mtousers.dto.UpdateUserRequest;
 import com.alejandro.mtousers.dto.UserResponse;
+import com.alejandro.mtousers.dto.UserSessionResponse;
 import org.keycloak.representations.idm.CredentialRepresentation;
 import org.keycloak.representations.idm.UserRepresentation;
+import org.keycloak.representations.idm.UserSessionRepresentation;
 import org.mapstruct.AfterMapping;
 import org.mapstruct.BeanMapping;
 import org.mapstruct.Mapper;
@@ -13,6 +15,7 @@ import org.mapstruct.MappingTarget;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Entre la representación de usuario de Keycloak y los DTOs de la API. Es el único sitio, junto
@@ -49,6 +52,30 @@ public interface UserMapper {
     @Mapping(target = "emailVerified", source = "emailVerified")
     @Mapping(target = "attributes", source = "attributes")
     void applyUpdate(UpdateUserRequest request, @MappingTarget UserRepresentation representation);
+
+    /**
+     * Una sesión. Keycloak indexa los clientes por su UUID interno y pone el {@code clientId} como
+     * valor; la API devuelve solo los nombres, ordenados, porque el UUID no significa nada fuera
+     * del servidor.
+     */
+    default UserSessionResponse toSessionResponse(UserSessionRepresentation session) {
+        if (session == null) {
+            return null;
+        }
+        List<String> clients = session.getClients() == null ? List.of()
+                : session.getClients().values().stream().filter(Objects::nonNull).sorted().toList();
+        return new UserSessionResponse(
+                session.getId(),
+                session.getUsername(),
+                session.getIpAddress(),
+                Instant.ofEpochMilli(session.getStart()),
+                Instant.ofEpochMilli(session.getLastAccess()),
+                clients);
+    }
+
+    default List<UserSessionResponse> toSessionResponses(List<UserSessionRepresentation> sessions) {
+        return sessions == null ? List.of() : sessions.stream().map(this::toSessionResponse).toList();
+    }
 
     default Instant toInstant(Long epochMillis) {
         return epochMillis == null ? null : Instant.ofEpochMilli(epochMillis);

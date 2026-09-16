@@ -4,9 +4,11 @@ import com.alejandro.mtousers.configuration.profiles.ProfileProperties;
 import com.alejandro.mtousers.dto.ClientRoleAssignment;
 import com.alejandro.mtousers.dto.ProfileResponse;
 import com.alejandro.mtousers.dto.ProfileSummaryResponse;
+import com.alejandro.mtousers.dto.UserResponse;
 import com.alejandro.mtousers.exception.ProfileNotFoundException;
 import com.alejandro.mtousers.keycloak.KeycloakAdminGateway;
 import com.alejandro.mtousers.mapper.ProfileMapper;
+import com.alejandro.mtousers.mapper.UserMapper;
 import com.alejandro.mtousers.service.AdminAuditLog;
 import com.alejandro.mtousers.service.AdminAuditLog.AdminAction;
 import com.alejandro.mtousers.service.ProfileService;
@@ -35,12 +37,15 @@ class ProfileServiceImpl implements ProfileService {
     private final KeycloakAdminGateway keycloak;
     private final ProfileProperties properties;
     private final ProfileMapper profileMapper;
+    private final UserMapper userMapper;
     private final AdminAuditLog audit;
 
-    ProfileServiceImpl(KeycloakAdminGateway keycloak, ProfileProperties properties, ProfileMapper profileMapper, AdminAuditLog audit) {
+    ProfileServiceImpl(KeycloakAdminGateway keycloak, ProfileProperties properties, ProfileMapper profileMapper,
+                       UserMapper userMapper, AdminAuditLog audit) {
         this.keycloak = keycloak;
         this.properties = properties;
         this.profileMapper = profileMapper;
+        this.userMapper = userMapper;
         this.audit = audit;
     }
 
@@ -97,6 +102,17 @@ class ProfileServiceImpl implements ProfileService {
         keycloak.removeRealmRoles(userId, List.of(role));
         audit.record(AdminAction.PROFILE_REMOVED, userId, "profile=" + profileName);
         return getUserProfiles(userId);
+    }
+
+    /**
+     * Quien tiene el perfil asignado. Es el rol de realm, asi que aqui si salen todos los que lo
+     * llevan; lo que no sale es quien tenga sus permisos por otra via. Sin recuento: Keycloak no
+     * ofrece ninguno para los miembros de un rol.
+     */
+    @Override
+    public List<UserResponse> listProfileMembers(String profileName, int first, int max) {
+        resolveProfile(profileName);
+        return userMapper.toResponses(keycloak.listRealmRoleMembers(profileName, first, max));
     }
 
     /** Un rol de realm que no es perfil no existe para esta API, aunque exista en Keycloak. */

@@ -30,6 +30,12 @@ public final class SecurityRoles {
     /** Asignar y quitar perfiles (roles compuestos de realm) a un usuario. */
     public static final String USERS_PROFILES_WRITE = "USERS_PROFILES_WRITE";
 
+    /**
+     * Cerrar sesiones de un usuario. Aparte de write: expulsa a alguien que esta trabajando, y es
+     * lo que se necesita cuando hay que cortar un acceso ya abierto sin tocar nada mas.
+     */
+    public static final String USERS_SESSIONS_WRITE = "USERS_SESSIONS_WRITE";
+
     /** Lectura de los endpoints de Actuator. */
     public static final String OPS_METRICS = "OPS_METRICS";
 

@@ -3,15 +3,19 @@ package com.alejandro.mtousers.controller;
 import com.alejandro.mtousers.configuration.security.SecurityConfiguration;
 import com.alejandro.mtousers.dto.ProfileResponse;
 import com.alejandro.mtousers.dto.ProfileSummaryResponse;
+import com.alejandro.mtousers.dto.UserResponse;
 import com.alejandro.mtousers.service.ProfileService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.Pattern;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
@@ -44,6 +48,17 @@ public class ProfileController {
     public ProfileResponse getProfile(
             @PathVariable @Pattern(regexp = PROFILE_NAME_PATTERN, message = PROFILE_NAME_MESSAGE) String profileName) {
         return profileService.getProfile(profileName);
+    }
+
+    @GetMapping("/profiles/{profileName}/users")
+    @Operation(summary = "Who holds a profile",
+            description = "Users with that realm role assigned. Offset pagination without a total: Keycloak offers "
+                    + "no count for role members.")
+    public List<UserResponse> listProfileMembers(
+            @PathVariable @Pattern(regexp = PROFILE_NAME_PATTERN, message = PROFILE_NAME_MESSAGE) String profileName,
+            @RequestParam(defaultValue = "0") @Min(0) int first,
+            @RequestParam(defaultValue = "20") @Min(1) @Max(200) int max) {
+        return profileService.listProfileMembers(profileName, first, max);
     }
 
     @GetMapping("/{userId}/profiles")

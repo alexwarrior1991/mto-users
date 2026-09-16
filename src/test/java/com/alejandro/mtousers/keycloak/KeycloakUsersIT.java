@@ -3,6 +3,7 @@ package com.alejandro.mtousers.keycloak;
 import com.alejandro.mtousers.dto.ClientRoleAssignment;
 import com.alejandro.mtousers.dto.CreateUserRequest;
 import com.alejandro.mtousers.dto.ExecuteActionsEmailRequest;
+import com.alejandro.mtousers.dto.PageResponse;
 import com.alejandro.mtousers.dto.ProfileResponse;
 import com.alejandro.mtousers.dto.ProfileSummaryResponse;
 import com.alejandro.mtousers.dto.RequiredAction;
@@ -12,10 +13,13 @@ import com.alejandro.mtousers.dto.UpdateUserRequest;
 import com.alejandro.mtousers.dto.UserResponse;
 import com.alejandro.mtousers.dto.UserRolesResponse;
 import com.alejandro.mtousers.dto.UserSearchCriteria;
+import com.alejandro.mtousers.dto.UserSessionResponse;
+import com.alejandro.mtousers.exception.InvalidSearchException;
 import com.alejandro.mtousers.exception.KeycloakUpstreamException;
 import com.alejandro.mtousers.exception.ProfileNotFoundException;
 import com.alejandro.mtousers.exception.ProtectedClientException;
 import com.alejandro.mtousers.exception.RoleNotFoundException;
+import com.alejandro.mtousers.exception.SessionNotFoundException;
 import com.alejandro.mtousers.exception.UserAlreadyExistsException;
 import com.alejandro.mtousers.exception.UserNotFoundException;
 import com.alejandro.mtousers.service.ProfileService;
@@ -124,8 +128,8 @@ class KeycloakUsersIT {
         assertEquals(username, created.username());
         assertEquals(Boolean.TRUE, created.enabled());
         assertEquals(List.of("ops"), created.attributes().get("dept"));
-        assertEquals(1, userService.search(new UserSearchCriteria(null, username, null, true, null, 0, 10)).total());
-        assertEquals(0, userService.search(new UserSearchCriteria(null, username, null, false, null, 0, 10)).total(),
+        assertEquals(1, userService.search(new UserSearchCriteria(null, username, null, true, null, List.of(), 0, 10)).total());
+        assertEquals(0, userService.search(new UserSearchCriteria(null, username, null, false, null, List.of(), 0, 10)).total(),
                 "enabled se combina con el resto de filtros en la misma llamada");
 
         // Duplicado.
@@ -184,7 +188,7 @@ class KeycloakUsersIT {
 
     @Test
     void theSafeguardsHoldAgainstTheRealThing() {
-        String existing = userService.search(new UserSearchCriteria(null, "existente", null, null, null, 0, 1)).content().getFirst().id();
+        String existing = userService.search(new UserSearchCriteria(null, "existente", null, null, null, List.of(), 0, 1)).content().getFirst().id();
 
         assertThrows(ProfileNotFoundException.class, () -> profileService.assignProfile(existing, "plain-role"));
         assertThrows(ProtectedClientException.class,
@@ -197,11 +201,118 @@ class KeycloakUsersIT {
     /** Sin SMTP en el realm Keycloak responde 500: tiene que llegar como 502, no como 500 propio. */
     @Test
     void anEmailThatKeycloakCannotSendIsAnUpstreamError() {
-        String existing = userService.search(new UserSearchCriteria(null, "existente", null, null, null, 0, 1)).content().getFirst().id();
+        String existing = userService.search(new UserSearchCriteria(null, "existente", null, null, null, List.of(), 0, 1)).content().getFirst().id();
 
         KeycloakUpstreamException failure = assertThrows(KeycloakUpstreamException.class, () -> userService.executeActionsEmail(existing,
                 new ExecuteActionsEmailRequest(List.of(RequiredAction.UPDATE_PASSWORD), null, null, null)));
         assertTrue(failure.getMessage().contains("HTTP 500"));
+    }
+
+    /**
+     * La búsqueda por atributo viaja en el parámetro {@code q} de Keycloak, cuenta igual que lista y
+     * combina con Y las claves distintas. Las dos formas en que {@code q} se pierde en silencio —ir
+     * acompañado de {@code search}, o repetir una clave— se rechazan antes de llamar al servidor.
+     */
+    @Test
+    void theAttributeSearchFiltersByTheUsersOwnAttributes() {
+        PageResponse<UserResponse> taller = userService.search(byAttributes("departamento:taller"));
+        assertEquals(List.of("existente"), usernamesOf(taller.content()));
+        assertEquals(1, taller.total(), "El total se cuenta con el atributo, no sobre el realm entero");
+
+        assertEquals(List.of("consultor"), usernamesOf(userService.search(byAttributes("departamento:operaciones")).content()));
+        assertEquals(List.of("consultor"), usernamesOf(userService.search(byAttributes("departamento:operaciones", "turno:noche")).content()),
+                "Dos claves distintas se combinan con Y");
+        assertEquals(0, userService.search(byAttributes("departamento:taller", "turno:noche")).total(),
+                "Nadie es del taller y del turno de noche a la vez");
+        assertEquals(0, userService.search(byAttributes("departamento:mantenimiento")).total());
+
+        assertThrows(InvalidSearchException.class, () -> userService.search(
+                new UserSearchCriteria("existente", null, null, null, null, List.of("departamento:taller"), 0, 10)));
+        assertThrows(InvalidSearchException.class,
+                () -> userService.search(byAttributes("departamento:taller", "departamento:operaciones")),
+                "Repetir la clave se rechaza: Keycloak se quedaria solo con el ultimo par");
+    }
+
+    /**
+     * La búsqueda inversa responde a «quién tiene esto». Keycloak devuelve <b>solo asignaciones
+     * directas</b>: quien llega a un rol de cliente a través de un perfil aparece en la lista del
+     * perfil, nunca en la del rol.
+     */
+    @Test
+    void theReverseLookupListsWhoHoldsAProfileAndWhoHoldsAClientRoleDirectly() {
+        assertTrue(usernamesOf(profileService.listProfileMembers("mto-users-viewer", 0, 20))
+                .containsAll(List.of("consultor", "existente")));
+        assertTrue(profileService.listProfileMembers("mto-warehouse-viewer", 0, 20).isEmpty());
+        assertThrows(ProfileNotFoundException.class, () -> profileService.listProfileMembers("plain-role", 0, 20));
+
+        String username = "rev." + UUID.randomUUID().toString().substring(0, 8);
+        UserResponse user = userService.create(new CreateUserRequest(username, null, null, null, null, true, null, null, null));
+
+        profileService.assignProfile(user.id(), "mto-warehouse-viewer");
+        assertEquals(List.of(username), usernamesOf(profileService.listProfileMembers("mto-warehouse-viewer", 0, 20)));
+        assertTrue(roleService.listClientRoleMembers("mto-stock-api", "stock-read", 0, 20).isEmpty(),
+                "El perfil le da stock-read, pero la lista del rol no expande los compuestos");
+
+        roleService.addClientRoles(user.id(), "mto-stock-api", new RoleNamesRequest(List.of("stock-read")));
+        assertEquals(List.of(username), usernamesOf(roleService.listClientRoleMembers("mto-stock-api", "stock-read", 0, 20)));
+        assertTrue(roleService.listClientRoleMembers("mto-stock-api", "stock-read", 1, 20).isEmpty(),
+                "'first' pagina de verdad contra Keycloak");
+
+        assertThrows(ProtectedClientException.class, () -> roleService.listClientRoleMembers("realm-management", "realm-admin", 0, 20));
+        assertThrows(RoleNotFoundException.class, () -> roleService.listClientRoleMembers("mto-stock-api", "stock-fly", 0, 20));
+
+        userService.delete(user.id());
+    }
+
+    /**
+     * Las sesiones son estado vivo del servidor: las abre un login de verdad y la API las cierra de
+     * una en una o todas de golpe. El endpoint que borra una sesión es del realm y no del usuario,
+     * así que un id ajeno cerraría la sesión de otra persona: el servicio comprueba antes de quién
+     * es y aquí se ve que no la cierra.
+     */
+    @Test
+    void theSessionsOfAUserAreOpenedByALoginAndClosedThroughTheApi() throws Exception {
+        String username = "ses." + UUID.randomUUID().toString().substring(0, 8);
+        UserResponse user = userService.create(new CreateUserRequest(username, "Sara", "Sesion",
+                username + "@mto.local", true, true, null, null, null));
+        userService.resetPassword(user.id(), new ResetPasswordRequest("Secreta.123", false));
+        assertTrue(userService.listSessions(user.id()).isEmpty(), "Sin login no hay nada que cerrar");
+
+        tokenFor(username, "Secreta.123");
+        tokenFor(username, "Secreta.123");
+
+        List<UserSessionResponse> sessions = userService.listSessions(user.id());
+        assertEquals(2, sessions.size(), "Cada password grant abre su propia sesión");
+        UserSessionResponse first = sessions.getFirst();
+        assertEquals(username, first.username());
+        assertEquals(List.of("mto-test-frontend"), first.clients(), "Sale el clientId, no el UUID interno");
+        assertNotNull(first.startedAt());
+        assertNotNull(first.lastAccessAt());
+
+        userService.revokeSession(user.id(), first.id());
+        assertEquals(1, userService.listSessions(user.id()).size());
+        assertThrows(SessionNotFoundException.class, () -> userService.revokeSession(user.id(), first.id()),
+                "La misma sesión ya no está");
+
+        String otherUserId = userService.search(new UserSearchCriteria(null, "existente", null, null, null, List.of(), 0, 1))
+                .content().getFirst().id();
+        String remaining = userService.listSessions(user.id()).getFirst().id();
+        assertThrows(SessionNotFoundException.class, () -> userService.revokeSession(otherUserId, remaining));
+        assertEquals(1, userService.listSessions(user.id()).size(), "Y la sesión sigue abierta");
+
+        userService.revokeAllSessions(user.id());
+        assertTrue(userService.listSessions(user.id()).isEmpty());
+        userService.revokeAllSessions(user.id());
+
+        userService.delete(user.id());
+    }
+
+    private static UserSearchCriteria byAttributes(String... attributes) {
+        return new UserSearchCriteria(null, null, null, null, null, List.of(attributes), 0, 10);
+    }
+
+    private static List<String> usernamesOf(List<UserResponse> users) {
+        return users.stream().map(UserResponse::username).toList();
     }
 
     private static String serverUrl() {

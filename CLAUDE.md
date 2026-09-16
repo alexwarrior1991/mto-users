@@ -68,9 +68,22 @@ Packages under `com.alejandro.mtousers`:
   are never listed nor assignable: `manage-users` lets the service account map any role, and this
   list is what keeps `users-roles-write` from granting `realm-admin`.
 - **Permissions never imply each other** (`ApiAuthorizationRulesTest`): `users-read`, `users-write`,
-  `users-delete`, `users-roles-write`, `users-password-reset`, `users-profiles-write`, `ops-metrics`,
-  `ops-write`. A new role goes to `SecurityRoles` **and** `keycloak/mto-users-partial-import.json`
-  (and to `mto-platform/keycloak/mto-ops-cross-service.json` if it is an `ops-*` role).
+  `users-delete`, `users-roles-write`, `users-password-reset`, `users-profiles-write`,
+  `users-sessions-write`, `ops-metrics`, `ops-write`. A new role goes to `SecurityRoles` **and**
+  `keycloak/mto-users-partial-import.json` (and to `mto-platform/keycloak/mto-ops-cross-service.json`
+  if it is an `ops-*` role). A route with more than one segment after `{userId}` needs its own
+  `requestMatcher`: the `DELETE API + "/*"` rule does not reach `/{userId}/sessions/{sessionId}`.
+- **Every `UsersException` subclass is named in an `@ExceptionHandler` list** of
+  `GlobalExceptionHandler`; the `UsersException` handler is a 422 safety net, not a route.
+  `GlobalExceptionHandlerTest` scans the package and fails if one is missing — calling a handler
+  method directly in a test passes either way, so only that guard and `RestControllerLayerTest` see it.
+- **What Keycloak drops in silence, this API rejects with 400** (`InvalidSearchException`): `search`
+  together with `attribute` (Keycloak applies `search` and discards `q`), and a repeated attribute
+  key (`q` is parsed into a map, so only the last pair survives). The role/profile member endpoints
+  return **direct assignments only**, never expanded composites, and that is documented, not fixed.
+- **Closing one session checks it belongs to that user first**: the Keycloak endpoint behind it
+  (`DELETE /realms/{realm}/sessions/{id}`) belongs to the realm, so a foreign session id would close
+  someone else's session.
 - The service account uses the realm `mto` (`mto-users-svc`), never the `master` realm.
 - Jackson 2 is on the classpath only for RESTEasy. The API is serialized with Jackson 3; do not add
   `spring-boot-jackson2`. The YAML/JAXB providers of the admin client are excluded on purpose.
