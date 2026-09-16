@@ -22,6 +22,7 @@ import com.alejandro.mtousers.exception.KeycloakUnavailableException;
 import com.alejandro.mtousers.exception.SessionNotFoundException;
 import com.alejandro.mtousers.exception.UserAlreadyExistsException;
 import com.alejandro.mtousers.exception.UserNotFoundException;
+import com.alejandro.mtousers.exception.UsersException;
 import com.alejandro.mtousers.service.ProfileService;
 import com.alejandro.mtousers.service.RoleService;
 import com.alejandro.mtousers.service.UserService;
@@ -51,10 +52,12 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -334,6 +337,45 @@ class RestControllerLayerTest {
 
     private static UserResponse user(String username) {
         return new UserResponse(USER_ID, username, null, null, username + "@mto.local", false, true, Instant.EPOCH, Map.of(), List.of());
+    }
+
+    /**
+     * Los errores que no vienen de la capa de negocio salen con el mismo cuerpo: tipo de contenido
+     * equivocado, verbo que no existe y parametro que no se puede convertir.
+     */
+    @Test
+    void theRequestFailuresThatNeverReachAServiceAreProblemJsonToo() throws Exception {
+        mockMvc.perform(post(USERS).with(admin()).contentType(MediaType.TEXT_PLAIN).content("ana"))
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.errorCode").value("REQ-415"));
+
+        mockMvc.perform(patch(USERS).with(admin()).contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isMethodNotAllowed())
+                .andExpect(jsonPath("$.errorCode").value("REQ-405"));
+
+        mockMvc.perform(get(USERS).param("enabled", "quizas").with(admin()))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("REQ-400"))
+                .andExpect(jsonPath("$.validationErrors[0].field").value("enabled"));
+
+        verifyNoInteractions(userService);
+    }
+
+    /**
+     * La red de seguridad de {@code UsersException}: una excepcion de negocio sin handler propio
+     * sale como 422 con su codigo, no como un 500 sin contexto. Que ninguna de las que existen
+     * llegue aqui lo vigila {@code GlobalExceptionHandlerTest}.
+     */
+    @Test
+    void aBusinessExceptionWithoutItsOwnHandlerFallsBackTo422() throws Exception {
+        when(userService.get(USER_ID)).thenThrow(new UsersException("USR-999", "algo que no encaja") {
+        });
+
+        mockMvc.perform(get(USERS + "/" + USER_ID).with(admin()))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.errorCode").value("USR-999"));
     }
 
     private static RequestPostProcessor admin() {

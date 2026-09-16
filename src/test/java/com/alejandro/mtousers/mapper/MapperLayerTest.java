@@ -165,12 +165,33 @@ class MapperLayerTest {
         assertEquals(Instant.ofEpochMilli(1_700_000_060_000L), response.lastAccessAt());
         assertEquals(List.of("mto-frontend", "mto-users-api"), response.clients(), "Ordenados y sin el UUID interno");
         assertTrue(userMapper.toSessionResponses(null).isEmpty());
-        assertEquals(List.of(), userMapper.toSessionResponse(sessionWithoutClients()).clients());
+        assertEquals(List.of(), userMapper.toSessionResponse(sessionWithoutClients()).clients(),
+                "Keycloak inicializa el mapa vacio, y un JSON sin el campo lo deja a null: ninguno de los dos casos rompe");
+        assertEquals(List.of(), userMapper.toSessionResponse(new UserSessionRepresentation()).clients());
+        assertNull(userMapper.toSessionResponse(null));
+        assertEquals(List.of(), new UserSessionResponse("s", null, null, null, null, null).clients(),
+                "El record tampoco deja pasar un null a quien lo consuma");
+    }
+
+    /**
+     * Un usuario federado puede llegar sin {@code createdTimestamp}, y ahi la conversion a
+     * {@link Instant} tiene que dar null en vez de la epoca.
+     */
+    @Test
+    void aUserWithoutACreationTimestampHasNoCreatedAt() {
+        UserRepresentation representation = new UserRepresentation();
+        representation.setId("id-2");
+        representation.setUsername("federado");
+
+        assertNull(userMapper.toResponse(representation).createdAt());
+        assertNull(userMapper.toInstant(null));
+        assertEquals(Instant.ofEpochMilli(7L), userMapper.toInstant(7L));
     }
 
     private static UserSessionRepresentation sessionWithoutClients() {
         UserSessionRepresentation session = new UserSessionRepresentation();
         session.setId("session-2");
+        session.setClients(null);
         return session;
     }
 

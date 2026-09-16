@@ -119,6 +119,14 @@ class BusinessLayerTest {
         assertTrue(rejected.getMessage().contains("cannot be combined"));
         verify(keycloak, never()).searchUsers(any());
 
+        // Un 'search' en blanco no cuenta como busqueda: el formulario que manda el parametro vacio
+        // no puede quedarse sin el filtro por atributo.
+        UserSearchCriteria blankSearch = new UserSearchCriteria("   ", null, null, null, null, List.of("departamento:ops"), 0, 20);
+        assertFalse(blankSearch.hasSearch());
+        when(keycloak.searchUsers(blankSearch)).thenReturn(List.of(user("ops.uno")));
+        when(keycloak.countUsers(blankSearch)).thenReturn(1);
+        assertEquals(1, userService.search(blankSearch).total());
+
         // Cada uno por su lado si vale, y el filtro por atributo tambien con username o enabled.
         UserSearchCriteria byAttribute = new UserSearchCriteria(null, null, null, true, null, List.of("departamento:ops"), 0, 20);
         when(keycloak.searchUsers(byAttribute)).thenReturn(List.of(user("ops.uno")));
@@ -148,6 +156,11 @@ class BusinessLayerTest {
         assertTrue(rejected.getMessage().contains("cannot repeat a key"));
         verify(keycloak, never()).searchUsers(any());
         verify(keycloak, never()).countUsers(any());
+
+        // Sin ':' el termino entero es la clave. El controlador no deja pasar uno asi, pero el
+        // servicio no depende de esa validacion para no repetir filtros.
+        assertEquals(List.of("solo-clave"), new UserSearchCriteria(null, null, null, null, null,
+                List.of("solo-clave", "solo-clave"), 0, 20).repeatedAttributeKeys());
     }
 
     @Test
@@ -247,6 +260,17 @@ class BusinessLayerTest {
         assertTrue(onlyAuditLine().contains("fields=lastName emailVerified"));
     }
 
+    /** La linea de auditoria enumera lo que venia en la peticion, no lo que de verdad cambio. */
+    @Test
+    void theAuditLineOfAnUpdateNamesEveryFieldThatCame() {
+        when(keycloak.findUser(USER_ID)).thenReturn(user("ana.uno"));
+
+        userService.update(USER_ID, new UpdateUserRequest("Ana", "Uno", "ana@mto.local", true,
+                Map.of("dept", List.of("ops"))));
+
+        assertTrue(onlyAuditLine().contains("fields=firstName lastName email emailVerified attributes"), onlyAuditLine());
+    }
+
     @Test
     void enablingAndDisablingOnlyTouchTheFlag() {
         UserRepresentation existing = user("ana.uno");
@@ -259,6 +283,12 @@ class BusinessLayerTest {
         verify(keycloak).updateUser(org.mockito.ArgumentMatchers.eq(USER_ID), sent.capture());
         assertEquals(Boolean.FALSE, sent.getValue().isEnabled());
         assertTrue(onlyAuditLine().contains("action=USER_DISABLED"));
+
+        userService.setEnabled(USER_ID, true);
+        verify(keycloak, org.mockito.Mockito.times(2)).updateUser(org.mockito.ArgumentMatchers.eq(USER_ID), sent.capture());
+        assertEquals(Boolean.TRUE, sent.getValue().isEnabled());
+        assertTrue(auditLines.list.getLast().getFormattedMessage().contains("action=USER_ENABLED"),
+                "Cada sentido deja su propia accion");
     }
 
     @Test
@@ -324,6 +354,32 @@ class BusinessLayerTest {
         assertEquals(List.of("r2"), sent.getValue().stream().map(RoleRepresentation::getId).toList(), "Sin duplicados y con el id que Keycloak necesita");
         assertEquals(List.of(new ClientRoleAssignment("mto-stock-api", List.of("stock-read", "stock-write"))), response.clientRoles());
         assertTrue(onlyAuditLine().contains("action=CLIENT_ROLES_ADDED"));
+        assertTrue(onlyAuditLine().contains("client=mto-stock-api roles=[stock-write]"));
+    }
+
+    @Test
+    void removingRolesResolvesTheSameWayAndLeavesItsOwnAuditLine() {
+        when(keycloak.findClient("mto-stock-api")).thenReturn(client("uuid-stock", "mto-stock-api"));
+        when(keycloak.listClientRoles("uuid-stock")).thenReturn(List.of(role("r1", "stock-read"), role("r2", "stock-write")));
+
+        // Quitar pasa por las mismas puertas que anadir: cliente protegido y nombre inexistente.
+        assertThrows(ProtectedClientException.class,
+                () -> roleService.removeClientRoles(USER_ID, "realm-management", new RoleNamesRequest(List.of("realm-admin"))));
+        assertThrows(RoleNotFoundException.class,
+                () -> roleService.removeClientRoles(USER_ID, "mto-stock-api", new RoleNamesRequest(List.of("stock-fly"))));
+        verify(keycloak, never()).removeClientRoles(anyString(), anyString(), anyList());
+
+        MappingsRepresentation after = new MappingsRepresentation();
+        after.setClientMappings(Map.of("mto-stock-api", clientMappings("mto-stock-api", "stock-read")));
+        when(keycloak.getUserRoleMappings(USER_ID)).thenReturn(after);
+
+        UserRolesResponse response = roleService.removeClientRoles(USER_ID, "mto-stock-api", new RoleNamesRequest(List.of("stock-write")));
+
+        ArgumentCaptor<List<RoleRepresentation>> sent = ArgumentCaptor.captor();
+        verify(keycloak).removeClientRoles(org.mockito.ArgumentMatchers.eq(USER_ID), org.mockito.ArgumentMatchers.eq("uuid-stock"), sent.capture());
+        assertEquals(List.of("r2"), sent.getValue().stream().map(RoleRepresentation::getId).toList());
+        assertEquals(List.of(new ClientRoleAssignment("mto-stock-api", List.of("stock-read"))), response.clientRoles());
+        assertTrue(onlyAuditLine().contains("action=CLIENT_ROLES_REMOVED"));
         assertTrue(onlyAuditLine().contains("client=mto-stock-api roles=[stock-write]"));
     }
 

@@ -1,6 +1,9 @@
 package com.alejandro.mtousers.exception;
 
 import com.alejandro.mtousers.configuration.web.CorrelationIdFilter;
+import jakarta.validation.ConstraintViolation;
+import jakarta.validation.ConstraintViolationException;
+import jakarta.validation.Path;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
@@ -15,6 +18,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 
 import java.util.Arrays;
@@ -29,6 +33,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class GlobalExceptionHandlerTest {
 
@@ -45,6 +51,44 @@ class GlobalExceptionHandlerTest {
      * el test de la clase no lo ve, porque llamar al método a mano acierta igual: lo que decide es
      * la lista de {@code @ExceptionHandler}. Por eso cada subclase tiene que estar nombrada.
      */
+    /**
+     * Dos handlers que hoy no dispara nadie por MVC —la validación de parámetros llega como
+     * {@code HandlerMethodValidationException} desde Spring 6, y ningún endpoint declara un
+     * parámetro obligatorio sin valor por defecto— pero que siguen ahí porque un
+     * {@code @RequestParam} obligatorio o un {@code @Validated} en un servicio los despiertan sin
+     * avisar. Si van a existir, que sea con el cuerpo del contrato y no con un 500.
+     */
+    @Test
+    void theDefensiveValidationHandlersKeepTheSameContract() {
+        MockHttpServletRequest request = request("GET", "/api/v1/users");
+
+        ResponseEntity<ProblemDetail> missing = handler.handleMissingParameter(
+                new MissingServletRequestParameterException("clientId", "String"), request);
+        assertEquals(HttpStatus.BAD_REQUEST, missing.getStatusCode());
+        assertEquals("REQ-400", codeOf(missing));
+        assertEquals(List.of(new ValidationError("clientId", "is required")), validationErrorsOf(missing));
+
+        ResponseEntity<ProblemDetail> violations = handler.handleConstraintViolation(
+                new ConstraintViolationException(Set.of(violation("search", "must not be blank"))), request);
+        assertEquals(HttpStatus.BAD_REQUEST, violations.getStatusCode());
+        assertEquals("REQ-VALIDATION", codeOf(violations));
+        assertEquals(List.of(new ValidationError("search", "must not be blank")), validationErrorsOf(violations));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<ValidationError> validationErrorsOf(ResponseEntity<ProblemDetail> response) {
+        return (List<ValidationError>) response.getBody().getProperties().get("validationErrors");
+    }
+
+    private static ConstraintViolation<?> violation(String path, String message) {
+        ConstraintViolation<?> violation = mock(ConstraintViolation.class);
+        Path propertyPath = mock(Path.class);
+        when(propertyPath.toString()).thenReturn(path);
+        when(violation.getPropertyPath()).thenReturn(propertyPath);
+        when(violation.getMessage()).thenReturn(message);
+        return violation;
+    }
+
     @Test
     void everyBusinessExceptionIsRoutedByItsOwnHandlerAndNotByTheCatchAll() {
         Set<String> routed = Arrays.stream(GlobalExceptionHandler.class.getDeclaredMethods())

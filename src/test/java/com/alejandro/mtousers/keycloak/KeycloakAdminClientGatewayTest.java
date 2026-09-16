@@ -38,13 +38,17 @@ import org.keycloak.representations.idm.UserRepresentation;
 import org.keycloak.representations.idm.UserSessionRepresentation;
 import org.mockito.ArgumentCaptor;
 
+import java.io.IOException;
 import java.net.ConnectException;
+import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -194,12 +198,58 @@ class KeycloakAdminClientGatewayTest {
         assertTrue(failure.getMessage().contains("Failed to send execute actions email"));
     }
 
+    /**
+     * El cuerpo de error tiene dos formas —{@code errorMessage} de la Admin API y
+     * {@code error}/{@code error_description} del endpoint de token— y ninguna puede hacer fallar
+     * la traduccion: lo que no se pueda leer deja el detalle vacio y la respuesta se cierra igual.
+     * Sin esto, un Keycloak detras de un proxy que devuelva HTML acabaria en un 500 propio.
+     */
+    @Test
+    void theErrorBodyIsReadInItsTwoShapesAndNeverThrows() {
+        assertNull(KeycloakAdminClientGateway.readError(null));
+
+        Response noEntity = mock(Response.class);
+        when(noEntity.hasEntity()).thenReturn(false);
+        assertNull(KeycloakAdminClientGateway.readError(noEntity));
+        verify(noEntity).close();
+
+        Response unreadable = mock(Response.class);
+        when(unreadable.hasEntity()).thenReturn(true);
+        when(unreadable.readEntity(Map.class)).thenThrow(new ProcessingException("no es JSON"));
+        assertNull(KeycloakAdminClientGateway.readError(unreadable));
+        verify(unreadable).close();
+
+        Response empty = mock(Response.class);
+        when(empty.hasEntity()).thenReturn(true);
+        when(empty.readEntity(Map.class)).thenReturn(null);
+        assertNull(KeycloakAdminClientGateway.readError(empty));
+
+        assertEquals("User exists with same username",
+                KeycloakAdminClientGateway.readError(json(409, Map.of("errorMessage", "User exists with same username"))).detail());
+
+        KeycloakAdminClientGateway.KeycloakError oauth = KeycloakAdminClientGateway.readError(
+                json(400, Map.of("error", "invalid_client", "error_description", "Invalid client credentials")));
+        assertTrue(oauth.isOAuthClientError());
+        assertEquals("Invalid client credentials", oauth.detail(), "El detalle sale de error_description cuando no hay errorMessage");
+
+        KeycloakAdminClientGateway.KeycloakError other = new KeycloakAdminClientGateway.KeycloakError(null, "unknown_thing", null);
+        assertFalse(other.isOAuthClientError(), "Un 'error' que no es de cliente OAuth no acusa a la cuenta de servicio");
+        assertEquals("unknown_thing", other.detail(), "Y sin descripcion el detalle es el propio codigo");
+    }
+
     @Test
     void noAnswerIs503() {
         when(user.toRepresentation()).thenThrow(new ProcessingException(new ConnectException("Connection refused")));
 
         KeycloakUnavailableException unavailable = assertThrows(KeycloakUnavailableException.class, () -> gateway.findUser(USER_ID));
         assertTrue(unavailable.getMessage().contains("Connection refused"));
+
+        // La causa de verdad puede estar dos niveles mas abajo y no traer mensaje: entonces vale su
+        // nombre, que sigue diciendo que paso, en vez de un "null" en el 503.
+        // Re-estubar con when(...) invocaria el metodo ya estubado, que lanzaria: doThrow no.
+        doThrow(new ProcessingException(new IOException(new SocketTimeoutException()))).when(user).toRepresentation();
+        assertTrue(assertThrows(KeycloakUnavailableException.class, () -> gateway.findUser(USER_ID))
+                .getMessage().contains("SocketTimeoutException"));
     }
 
     @Test
