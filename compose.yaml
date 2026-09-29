@@ -1,6 +1,6 @@
-# Solo la aplicacion. Keycloak y el colector de trazas los levanta mto-platform, que es el unico
-# entorno local compartido del dominio: mto-users no tiene base de datos ni broker, todo lo que
-# administra vive en el Keycloak de la plataforma.
+# Solo la aplicacion. Keycloak, el broker y el colector de trazas los levanta mto-platform, que es
+# el unico entorno local compartido del dominio: mto-users no tiene base de datos, todo lo que
+# administra vive en el Keycloak de la plataforma, y el broker solo lo usa para publicar lo que hace.
 #
 #   cd ../mto-platform && docker compose up -d && ./keycloak/apply-partials.sh   # infraestructura + realm
 #   docker compose up -d --build                                                 # este servicio contra ella
@@ -33,9 +33,18 @@ services:
       APP_PROFILES_PREFIX: ${APP_PROFILES_PREFIX:-mto-}
       APP_SECURITY_EXPOSE_API_DOCS: ${APP_SECURITY_EXPOSE_API_DOCS:-false}
       APP_CORS_ALLOWED_ORIGIN: ${APP_CORS_ALLOWED_ORIGIN:?APP_CORS_ALLOWED_ORIGIN must be set}
+      # El broker de mto-platform, para publicar quien hizo cada cambio hacia mto-notification.
+      SPRING_RABBITMQ_HOST: ${SPRING_RABBITMQ_HOST:-host.docker.internal}
+      SPRING_RABBITMQ_PORT: ${SPRING_RABBITMQ_PORT:-5672}
+      SPRING_RABBITMQ_USERNAME: ${SPRING_RABBITMQ_USERNAME:?SPRING_RABBITMQ_USERNAME must be set}
+      SPRING_RABBITMQ_PASSWORD: ${SPRING_RABBITMQ_PASSWORD:?SPRING_RABBITMQ_PASSWORD must be set}
+      SPRING_RABBITMQ_VIRTUAL_HOST: ${SPRING_RABBITMQ_VIRTUAL_HOST:-/}
+      APP_RABBITMQ_ENABLED: ${APP_RABBITMQ_ENABLED:-true}
+      MESSAGING_SIGNATURE_SECRET: ${MESSAGING_SIGNATURE_SECRET:-}
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-http://otel.mto.local:4318/v1/traces}
       MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: ${MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE:-health,info,metrics,prometheus}
       MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: ${MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS:-never}
+      MANAGEMENT_HEALTH_RABBIT_ENABLED: ${MANAGEMENT_HEALTH_RABBIT_ENABLED:-false}
       LOGGING_LEVEL_ROOT: ${LOGGING_LEVEL_ROOT:-INFO}
       LOGGING_LEVEL_APP: ${LOGGING_LEVEL_APP:-INFO}
       JAVA_OPTS: ${JAVA_OPTS:-}

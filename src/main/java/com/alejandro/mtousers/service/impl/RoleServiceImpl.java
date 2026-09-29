@@ -76,7 +76,8 @@ class RoleServiceImpl implements RoleService {
         ClientRepresentation client = resolveClient(clientId);
         List<RoleRepresentation> roles = resolveRoles(client, request.roles());
         keycloak.addClientRoles(userId, client.getId(), roles);
-        audit.record(AdminAction.CLIENT_ROLES_ADDED, userId, "client=" + clientId + " roles=" + names(roles));
+        audit.record(AdminAction.CLIENT_ROLES_ADDED, userId,
+                UserServiceImpl.detail("client", clientId, "roles", names(roles)));
         return getUserRoles(userId);
     }
 
@@ -85,7 +86,8 @@ class RoleServiceImpl implements RoleService {
         ClientRepresentation client = resolveClient(clientId);
         List<RoleRepresentation> roles = resolveRoles(client, request.roles());
         keycloak.removeClientRoles(userId, client.getId(), roles);
-        audit.record(AdminAction.CLIENT_ROLES_REMOVED, userId, "client=" + clientId + " roles=" + names(roles));
+        audit.record(AdminAction.CLIENT_ROLES_REMOVED, userId,
+                UserServiceImpl.detail("client", clientId, "roles", names(roles)));
         return getUserRoles(userId);
     }
 

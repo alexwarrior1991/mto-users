@@ -1,6 +1,8 @@
 package com.alejandro.mtousers;
 
 import com.alejandro.mtousers.keycloak.KeycloakAdminGateway;
+import com.alejandro.mtousers.messaging.NoOpUsersEventPublisher;
+import com.alejandro.mtousers.messaging.UsersEventPublisher;
 import com.alejandro.mtousers.service.ProfileService;
 import com.alejandro.mtousers.service.RoleService;
 import com.alejandro.mtousers.service.UserService;
@@ -45,6 +47,18 @@ class MtoUsersApplicationTests {
     @Test
     void exactlyOneSecurityFilterChainIsRegistered() {
         assertEquals(1, context.getBeansOfType(SecurityFilterChain.class).size());
+    }
+
+    /**
+     * El perfil de test apaga el broker ({@code app.rabbitmq.enabled=false}): el publicador es el
+     * NoOp, nada se declara y nada intenta conectar. Con el interruptor encendido el cableado real se
+     * prueba en {@code MessagingLayerTest} con un {@code ApplicationContextRunner}.
+     */
+    @Test
+    void withoutABrokerTheEventsPublisherIsTheNoOpOne() {
+        assertEquals(1, context.getBeansOfType(UsersEventPublisher.class).size());
+        assertTrue(context.getBean(UsersEventPublisher.class) instanceof NoOpUsersEventPublisher);
+        assertEquals(0, context.getBeansOfType(org.springframework.amqp.core.TopicExchange.class).size());
     }
 
     /**

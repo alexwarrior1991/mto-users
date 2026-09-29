@@ -18,6 +18,10 @@ app:
     # configuracion.
     audience-validation-enabled: ${KEYCLOAK_AUDIENCE_VALIDATION_ENABLED:false}
     expose-api-docs: ${APP_SECURITY_EXPOSE_API_DOCS:true}
+  # Sin broker: el publicador es el NoOp y nada se declara ni se conecta. Lo que publica se prueba
+  # con dobles en MessagingLayerTest y BusinessLayerTest.
+  rabbitmq:
+    enabled: false
   keycloak:
     # Nadie escucha aqui: los tests no llaman a Keycloak (el gateway se prueba con dobles y el IT
     # levanta su propio contenedor y sobreescribe esto).

@@ -15,6 +15,24 @@ spring:
     virtual:
       enabled: true
 
+  # EL MISMO broker en el que publican mto-configuration y los demas, el de mto-platform. Este
+  # servicio solo publica (un evento por accion administrativa, hacia mto-notification); no
+  # consume nada. Con app.rabbitmq.enabled=false no se conecta.
+  rabbitmq:
+    host: ${SPRING_RABBITMQ_HOST:localhost}
+    port: ${SPRING_RABBITMQ_PORT:5672}
+    username: ${SPRING_RABBITMQ_USERNAME:guest}
+    password: ${SPRING_RABBITMQ_PASSWORD:guest}
+    virtual-host: ${SPRING_RABBITMQ_VIRTUAL_HOST:/}
+    # Obligatorio: un evento solo cuenta como publicado con el ack del broker, y sin confirms el
+    # publicador no arranca (MessagingConfiguration). Con returns, un mensaje que no encaja en
+    # ninguna cola vuelve en vez de perderse en silencio.
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    template:
+      mandatory: true
+      observation-enabled: ${SPRING_RABBITMQ_TEMPLATE_OBSERVATION_ENABLED:true}
+
 management:
   endpoints:
     web:
@@ -31,6 +49,12 @@ management:
       access: unrestricted
     prometheus:
       access: unrestricted
+  health:
+    # Fuera del health: un broker caido deja de publicar eventos (se reintentan, y lo perdido se
+    # cuenta), pero la API sigue administrando usuarios. Contarlo como DOWN sacaria la instancia
+    # del balanceador por algo que no le impide trabajar.
+    rabbit:
+      enabled: ${MANAGEMENT_HEALTH_RABBIT_ENABLED:false}
   info:
     env:
       enabled: true
@@ -145,3 +169,26 @@ app:
   correlation:
     header-name: X-Correlation-Id
     max-length: 64
+
+  # Los eventos hacia mto-notification: un mensaje por accion administrativa, con la persona que la
+  # hizo, por el exchange propio de este servicio. Sin base de datos no hay outbox: el evento se
+  # encola en memoria tras responder Keycloak y un hilo lo publica con confirms, reintentando con
+  # esperas crecientes; lo que no llega se cuenta en users_events_lost_total{reason}.
+  rabbitmq:
+    enabled: ${APP_RABBITMQ_ENABLED:true}
+    exchange: ${APP_RABBITMQ_USERS_EXCHANGE:mto.users.exchange}
+    publisher:
+      # Eventos esperando a salir; por encima, el mas nuevo se pierde y se cuenta. Acotada para que
+      # una caida larga del broker no se coma la memoria.
+      queue-capacity: ${APP_RABBITMQ_PUBLISHER_QUEUE_CAPACITY:1000}
+      confirm-timeout: ${APP_RABBITMQ_PUBLISHER_CONFIRM_TIMEOUT:10s}
+      # Las esperas entre intentos; tantos reintentos como esperas.
+      retry-delays: ${APP_RABBITMQ_PUBLISHER_RETRY_DELAYS:1s,5s,30s}
+      # Lo que la parada espera a que la cola se vacie.
+      drain-timeout: ${APP_RABBITMQ_PUBLISHER_DRAIN_TIMEOUT:10s}
+
+  # Firma de los mensajes, sobre los bytes que viajan. EL MISMO VALOR que en los demas servicios
+  # que publican y que en mto-notification; vacio, la firma es un SHA-256 sin secreto.
+  messaging:
+    signature:
+      secret: ${MESSAGING_SIGNATURE_SECRET:}

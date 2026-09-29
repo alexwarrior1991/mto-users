@@ -115,6 +115,8 @@ jobs:
             -e KEYCLOAK_ADMIN_CLIENT_SECRET=smoke-test-only \
             -e APP_CORS_ALLOWED_ORIGIN=http://localhost:4200 \
             -e MTO_TRACING_ENABLED=false \
+            -e APP_RABBITMQ_ENABLED=false \
+            -e MANAGEMENT_HEALTH_RABBIT_ENABLED=false \
             "$IMAGE"
           for i in $(seq 1 45); do
             if curl -fsS http://localhost:8084/actuator/health > /dev/null; then

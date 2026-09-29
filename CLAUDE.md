@@ -6,21 +6,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 MTO Users: a Spring Boot 4 / Java 25 REST API that administers the **users, client roles and
 profiles** of the `mto` Keycloak realm through the **Keycloak Admin API**. Keycloak is the single
-source of truth: there is no database, no broker and nothing is persisted here. `README.md` is the
-functional and operational reference; `keycloak/README.md` explains the realm side (clients, the
-service account and its `realm-management` roles).
+source of truth: there is no database and nothing is persisted here. The only thing that leaves is
+one event per administrative action, with the person who did it, published best-effort to the
+platform's RabbitMQ for `mto-notification` (see **Messaging**). `README.md` is the functional and
+operational reference; `keycloak/README.md` explains the realm side (clients, the service account
+and its `realm-management` roles).
 
-⚠️ `mto-configuration`, `mto-stock`, `mto-maintenance` and `mto-gateway` are **independent sibling
-repositories**. The local infrastructure (Keycloak, the trace collector) is brought up by
-`mto-platform`, whose `keycloak/apply-partials.sh` applies this repository's
-`keycloak/mto-users-partial-import.json` and grants the service account its roles. `compose.yaml`
-here holds **only the application**.
+⚠️ `mto-configuration`, `mto-stock`, `mto-maintenance`, `mto-notification` and `mto-gateway` are
+**independent sibling repositories**. The local infrastructure (Keycloak, RabbitMQ, the trace
+collector) is brought up by `mto-platform`, whose `keycloak/apply-partials.sh` applies this
+repository's `keycloak/mto-users-partial-import.json` (after `mto-notification`'s, whose roles the
+profiles here name) and grants the service account its roles. `compose.yaml` here holds **only the
+application**.
 
 ## Commands
 
 ```bash
 ./mvnw compile
-./mvnw test                                    # unit + slice tests, no Docker
+./mvnw test                                    # unit + slice tests, no Docker, no broker (app.rabbitmq.enabled=false in the test profile)
 ./mvnw verify                                  # + KeycloakUsersIT (real Keycloak 26.1 in Testcontainers, skipped without Docker)
 ./mvnw test -Dtest=ApiAuthorizationRulesTest   # one class
 ./mvnw spring-boot:run                         # dev profile: port 8084, Swagger open, dev secret
@@ -42,6 +45,12 @@ Packages under `com.alejandro.mtousers`:
   `KeycloakAdminClientConfiguration`: builds the `Keycloak` admin client bean (client_credentials with
   `mto-users-svc`, timeouts via `ResteasyClientBuilderImpl`) and the `KeycloakAdminGateway` bean.
 - `configuration/web` — `CorrelationIdFilter` (`X-Correlation-Id` → MDC `correlationId`), OpenAPI.
+- `configuration/messaging` — `UsersMessagingProperties` (`app.rabbitmq.*`: the switch, the exchange,
+  the publisher's queue capacity, confirm timeout, retry delays and drain timeout),
+  `MessageSignatureProperties` (`app.messaging.signature.secret`) and `MessagingConfiguration`: the
+  `NoOpUsersEventPublisher` when `app.rabbitmq.enabled=false`, otherwise the durable topic exchange,
+  the envelope factory, the sender, the dispatcher and `RabbitUsersEventPublisher`. It refuses to
+  start without publisher confirms on the connection factory.
 - `configuration/profiles` — `ProfileProperties` (`app.profiles.prefix`, default `mto-`).
 - `keycloak` — **`KeycloakAdminGateway` is the only door to Keycloak.** `KeycloakAdminClientGateway`
   wraps the admin client and translates every JAX-RS failure (`call(...)`): 404 → `UserNotFound`/
@@ -50,9 +59,17 @@ Packages under `com.alejandro.mtousers`:
   (502), `ProcessingException` → `KeycloakUnavailable` (503). `UsersQueryResource` is a custom
   JAX-RS proxy (`Keycloak.proxy`) because no `UsersResource.search` overload combines `search` with
   `enabled`/`emailVerified`. Nothing from `org.keycloak` leaves `keycloak/` and `mapper/`.
+- `messaging` — the envelope shared with the siblings (`AsynchronousMessage`, `DomainEvent`,
+  `MessageActor`/`MessageActorKind`), `UsersEventNames` (every `AdminAction` → entity, event name,
+  routing key `mto.users.<entity>.<event>` and `eventType` `USERS_<ENTITY>_<EVENT>`),
+  `UsersEventEnvelopeFactory` (built in the request thread: actor from `CurrentUserService`,
+  `correlationId` from the MDC, `messageHash` over the seven original keys), `SensitiveKeys`,
+  `MessagePayloadSignature`, `UsersEventSender` (one `send` + confirm + returned check),
+  `UsersEventDispatcher` (bounded queue, one virtual thread, retries, loss metrics, drain on stop),
+  `RabbitUsersEventPublisher`, `NoOpUsersEventPublisher`.
 - `service` + `service/impl` — `UserService`, `RoleService`, `ProfileService` (package-private impls)
   and `AdminAuditLog` (one INFO line per mutation on logger `com.alejandro.mtousers.audit`, never a
-  password or token).
+  password or token, and then the event: `record(...)` is the only hook of the sixteen actions).
 - `controller` — `UserController`, `RoleController`, `ProfileController`, all under `/api/v1/users`
   (the gateway rewrites `/api/users` to it). Literal segments `roles`/`profiles` win over `{userId}`.
 - `dto` — records; `mapper` — MapStruct (`MapStructCentralConfig` like the siblings);
@@ -99,12 +116,42 @@ Packages under `com.alejandro.mtousers`:
 - Passwords never reach a log: `CreateUserRequest`/`ResetPasswordRequest` hide them in `toString()`,
   and operation names passed to `call(...)` in the gateway must not include them.
 
+### Messaging
+
+- **One event per administrative action, through `AdminAuditLog.record(...)`**, published to the
+  durable topic exchange `mto.users.exchange` **after** Keycloak answered. This service only
+  publishes: it declares no queue (`mto-notification` owns `mto.notification.users.queue`, bound to
+  `mto.users.#`). The contract (`UsersEventNames`, the `values` keys, the envelope) is consumed by
+  `mto-notification`: keys are only **added**; renaming or removing one, or a routing key, breaks it.
+  `README.md` (*Eventos hacia mto-notification*) documents it, and `docs/messaging/examples/` holds one
+  real JSON per event shape, compared by `MessagingLayerTest` with the real factory: a new key
+  changes the example in the same commit.
+- **No outbox, on purpose**: there is no database to write it in. The publication is best effort
+  and loud about what it loses: the envelope is built in the request thread (the only one with the
+  token and the MDC), the HTTP response never waits for the broker, and the dispatcher retries with
+  the configured delays and then logs a WARN and counts `users_events_lost_total{reason}`
+  (`send-failed`, `queue-full`, `shutdown`). Keycloak's own admin event remains as the fallback the
+  reader in `mto-notification` sees. Never make the response wait for the confirm and never block a
+  Keycloak call on the broker.
+- **Nothing that smells like a credential travels in `values`**: `SensitiveKeys` rejects the key
+  (`password`, `secret`, `token`, `otp`...) at the envelope, so a detail key is named after the fact
+  (`temporaryCredential`, `temporary`), never after the secret. `messageHash` covers the seven
+  original keys only; `actor` and `correlationId` are outside it, like in `mto-configuration`.
+- The broker is not in the health (`management.health.rabbit.enabled=false` by default) and the
+  application starts without it; `app.rabbitmq.enabled=false` (the `test` profile) leaves only the
+  `NoOpUsersEventPublisher`. Publisher confirms are mandatory: without them the context fails.
+
 ### Testing
 
 One class per layer, add methods rather than classes: `SecurityLayerTest`, `ApiAuthorizationRulesTest`
 (`@WebMvcTest` with the real controllers and mocked services), `CorrelationIdFilterTest`,
 `KeycloakAdminClientGatewayTest` (mocked resource chain), `BusinessLayerTest` (mocked gateway, real
-mappers, audit lines captured from Logback), `MapperLayerTest`, `RestControllerLayerTest`,
-`GlobalExceptionHandlerTest`, `DtoValidationTest`, `MtoUsersApplicationTests` (full context, no
-Keycloak listening) and `KeycloakUsersIT` (failsafe; Keycloak 26.1 via Testcontainers with
+mappers, audit lines captured from Logback and the event of every action captured by a recording
+publisher), `MessagingLayerTest` (the names, the envelope, the signature, the sender against a
+mocked `RabbitTemplate`, the dispatcher driven with latches and a fake sleeper, the publisher, the
+wiring with `ApplicationContextRunner` and the examples; its stub configuration is a
+`@TestConfiguration` so the full-context test does not scan it), `MapperLayerTest`,
+`RestControllerLayerTest`, `GlobalExceptionHandlerTest`, `DtoValidationTest`,
+`MtoUsersApplicationTests` (full context, no Keycloak listening, no broker: the NoOp publisher) and
+`KeycloakUsersIT` (failsafe; Keycloak 26.1 via Testcontainers with
 `src/test/resources/keycloak/mto-users-test-realm.json`, which mirrors the shape of `keycloak/`).
