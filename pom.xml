@@ -59,6 +59,14 @@
             <artifactId>spring-boot-starter-security-oauth2-resource-server</artifactId>
         </dependency>
 
+        <!-- Solo para PUBLICAR: un evento por accion administrativa hacia mto-notification, con la
+             persona que la hizo. No hay ningun consumidor aqui, y con app.rabbitmq.enabled=false
+             (los tests) nada se declara ni se conecta. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-amqp</artifactId>
+        </dependency>
+
         <!--
             Cliente oficial de la Admin API de Keycloak. Aporta los recursos tipados (RealmResource,
             UsersResource, RolesResource...) y las representaciones, y gestiona el solo el token de la

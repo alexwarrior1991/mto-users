@@ -2,9 +2,9 @@
 
 Servicio de administración de **usuarios, roles y perfiles** del dominio `MTO`, construido con
 Spring Boot 4 y Java 25 sobre la **Admin API de Keycloak**. Keycloak es la única fuente de verdad:
-`mto-users` no tiene base de datos ni broker, no persiste nada y no emite tokens. Lo que hace es
-exponer, con el mismo contrato de seguridad y de errores que el resto de servicios, lo que hasta
-ahora solo se podía hacer desde la consola de Keycloak:
+`mto-users` no tiene base de datos, no persiste nada y no emite tokens. Lo que hace es exponer, con
+el mismo contrato de seguridad y de errores que el resto de servicios, lo que hasta ahora solo se
+podía hacer desde la consola de Keycloak:
 
 - **usuarios**: buscar con filtros y paginación, crear, modificar datos básicos, habilitar y
   deshabilitar, borrar, fijar una contraseña temporal y enviar acciones requeridas por correo
@@ -14,8 +14,12 @@ ahora solo se podía hacer desde la consola de Keycloak:
 - **perfiles**: listar los perfiles de la plataforma, ver qué concede cada uno, y asignarlos y
   quitarlos a un usuario.
 
-Es un servicio hermano de `mto-configuration`, `mto-stock`, `mto-maintenance` y `mto-gateway`, con
-la misma estructura y las mismas convenciones. Se publica detrás del gateway en `/api/users/**`.
+Cada cambio que hace lo cuenta, con la persona que lo hizo, en un evento hacia
+`mto-notification` por el broker de la plataforma ([Eventos hacia `mto-notification`](#eventos-hacia-mto-notification)).
+
+Es un servicio hermano de `mto-configuration`, `mto-stock`, `mto-maintenance`, `mto-notification` y
+`mto-gateway`, con la misma estructura y las mismas convenciones. Se publica detrás del gateway en
+`/api/users/**`.
 
 ---
 
@@ -113,6 +117,40 @@ que llevan contraseña la ocultan en `toString()`). El identificador de correlac
 `X-Correlation-Id` —lo genera el gateway o, si falta, este servicio—, va en cada línea de log a
 través del MDC y vuelve en la respuesta y en cada `ProblemDetail`.
 
+La misma línea es la que sale como evento: `AdminAuditLog.record(...)` es el único gancho de las
+dieciséis acciones, y tras escribir el log entrega el evento al publicador. Lo que dice el log y lo
+que dice el evento no pueden discrepar porque son el mismo detalle.
+
+### Un evento por acción, publicado después de Keycloak y sin outbox
+
+Los servicios con base de datos publican con un outbox: el evento se escribe en la misma
+transacción que el cambio y un relé lo entrega después, así que nunca hay cambio sin evento. Aquí
+no hay transacción ni tabla en la que apoyarse, y meter una base de datos solo para eso sería
+convertir un cliente de Keycloak en algo que persiste. La publicación es, por tanto, **de mejor
+esfuerzo y explícita sobre lo que pierde**:
+
+- el sobre se construye en el hilo de la petición, **después** de que Keycloak haya respondido (un
+  cambio que Keycloak rechazó no se cuenta), y con lo que solo existe en ese hilo: la persona del
+  token y el `X-Correlation-Id` del MDC;
+- la respuesta HTTP no espera al broker: el evento entra en una cola en memoria acotada
+  (`app.rabbitmq.publisher.queue-capacity`, 1000) y un hilo propio lo publica con
+  *publisher confirms* y *returns* activados: solo cuenta como publicado con el `ack` del broker y
+  sin que vuelva como no enrutable;
+- si el broker no confirma, se reintenta con las esperas de `retry-delays` (1 s, 5 s, 30 s) y
+  después se **pierde en voz alta**: una línea `WARN` con el id y el tipo del evento y el contador
+  `users_events_lost_total{reason=send-failed}`. Con la cola llena, el más nuevo se pierde
+  (`reason=queue-full`); al parar, la aplicación espera `drain-timeout` a que la cola se vacíe y lo
+  que quede se cuenta como `reason=shutdown`;
+- la aplicación arranca sin broker y **no lo mete en el health** (`MANAGEMENT_HEALTH_RABBIT_ENABLED`
+  es `false` por defecto): un broker caído no debe dejar sin administrar el realm. Sin *publisher
+  confirms* (`spring.rabbitmq.publisher-confirm-type: correlated`) el publicador **no arranca**,
+  porque cada evento esperaría el timeout y se perdería.
+
+Lo perdido no es un agujero ciego: Keycloak registra su propio evento de administración de cada
+cambio, y `mto-notification` lo lee por la Admin API con la cuenta de servicio `mto-users-svc` como
+actor. Lo que este evento añade es **la persona**; si falta, queda el de Keycloak. Con
+`APP_RABBITMQ_ENABLED=false` no se declara ni se publica nada (es como corren los tests).
+
 ---
 
 ## Seguridad
@@ -139,7 +177,10 @@ realm llamado como un permiso nunca lo conceda.
 
 Ningún permiso implica otro: `ApiAuthorizationRulesTest` lo comprueba verbo a verbo. Los perfiles
 de la plataforma que los agrupan: `mto-users-viewer` (`users-read`), `mto-users-manager` (todo menos
-borrar) y `mto-users-admin` (todo). `mto-ops` añade `users-read`, `ops-metrics` y `ops-write`.
+borrar) y `mto-users-admin` (todo). `mto-ops` añade `users-read`, `ops-metrics` y `ops-write`. Los
+tres llevan además la bandeja de `mto-notification` (`notification-inbox`), y `mto-users-admin`, el
+registro de actividad y los accesos (`notification-activity-read`, `notification-access-read`): a
+quien administra las cuentas le toca ver quién entra y quién falla al entrar.
 
 Cerrar sesiones tiene permiso propio, `users-sessions-write`, y no lo dan ni `users-write` ni
 `users-delete`: echar a todo el mundo de la aplicación no se parece a editar una ficha, y quien
@@ -400,6 +441,72 @@ La misma colección, para el cliente HTTP del IDE, está en [`http/mto-users-api
 
 ---
 
+## Eventos hacia `mto-notification`
+
+Un evento por acción administrativa, en el exchange *topic* durable **`mto.users.exchange`** del
+broker de `mto-platform` (el mismo en el que publica `mto-configuration`). Este servicio **solo
+publica**: no declara ninguna cola. La cola es de quien consume (`mto-notification` declara
+`mto.notification.users.queue` y la enlaza a `mto.users.#`), igual que en los datos maestros.
+
+### El sobre
+
+El mismo `AsynchronousMessage` de `mto-configuration`, con `data` en su forma de evento propio
+(`DomainEvent`), la persona y la correlación:
+
+| Clave | Qué es |
+|---|---|
+| `operationId` | UUID del evento; viaja también como `message_id` AMQP y es la clave de idempotencia del consumidor |
+| `referenceId` | `user-<id del usuario objetivo>` |
+| `origin` | `mto-users` |
+| `creationDate` | Instante ISO-8601 (UTC) en que se construyó, en el hilo de la petición |
+| `eventType` | `USERS_<ENTIDAD>_<EVENTO>` (`USERS_USER_CREATED`, `USERS_CLIENT_ROLES_ADDED`...) |
+| `data` | `{entityName, entityId, eventName, values}`: `entityId` es **siempre el usuario objetivo** —es el agregado de todo lo que hace este servicio— y `values` empieza por `targetUserId` y `targetUsername` (`null` cuando el servicio no lo conoce) y sigue con el detalle de la acción |
+| `messageHash` | SHA-256 del JSON de las siete claves anteriores, como en todo el dominio; el actor y la correlación no entran |
+| `actor` | `{id, username, kind}`: el `sub` y el `preferred_username` del token; `kind` es `PERSON`, `SERVICE` (un `preferred_username` que empieza por `service-account-`) o `SYSTEM` (sin autenticación) |
+| `correlationId` | El `X-Correlation-Id` de la petición, o ausente |
+
+Cabeceras AMQP: `eventType`, `aggregateType` (la entidad), `aggregateId` (el usuario objetivo),
+`messageSignature` y `messageSignatureAlgorithm` (`HMAC-SHA256` sobre los bytes que viajan con
+`MESSAGING_SIGNATURE_SECRET`, el mismo secreto que en los demás servicios; sin él, `SHA-256`),
+`content_type: application/json`, entrega persistente. No hay `sequenceNumber`: lo asigna un outbox,
+y aquí no lo hay.
+
+### Los eventos
+
+| Acción | Clave de enrutado | `values` además de `targetUserId` y `targetUsername` |
+|---|---|---|
+| Alta | `mto.users.user.created` | `enabled`, `temporaryCredential` (si se creó con contraseña temporal; nunca la contraseña), `requiredActions` |
+| Modificación de datos básicos | `mto.users.user.updated` | `fields`: los campos que venían en la petición |
+| Habilitar / deshabilitar | `mto.users.user.enabled` / `mto.users.user.disabled` | — |
+| Baja | `mto.users.user.deleted` | — (el nombre de usuario se lee antes de borrar) |
+| Contraseña temporal | `mto.users.user.password-reset` | `temporary` |
+| Correo de acciones | `mto.users.user.actions-email-sent` | `actions`, `clientId` |
+| Roles de cliente | `mto.users.client-roles.added` / `.removed` | `client`, `roles` |
+| Perfiles | `mto.users.profile.assigned` / `.removed` | `profile` |
+| Una sesión / todas | `mto.users.session.revoked` / `.all-revoked` | `session` / — |
+| Una sesión offline / todas | `mto.users.offline-session.revoked` / `.all-revoked` | `session` / `sessions` (cuántas) |
+| Credencial quitada | `mto.users.credential.deleted` | `credential`, `type` |
+
+**Nunca una contraseña, un token ni un secreto**: los servicios no los ponen en el detalle y, por
+si acaso, el sobre rechaza cualquier clave que huela a credencial (`password`, `secret`, `token`,
+`otp`...), lo que haría fallar la petición antes que dejarlo salir. El contrato solo **añade**
+claves: renombrar o quitar una, o una clave de enrutado, rompe a `mto-notification`.
+
+Hay un ejemplo real por forma de evento en [`docs/messaging/examples/`](docs/messaging/examples/)
+(`user-created.json`, `profile-assigned.json`), construido por `MessagingLayerTest` con la factoría
+real y comparado con el fichero: una clave nueva cambia el ejemplo en el mismo commit, y el
+consumidor lo copia como *fixture*.
+
+### Métricas
+
+| Métrica | Qué cuenta |
+|---|---|
+| `users_events_published_total` | Eventos confirmados por el broker |
+| `users_events_lost_total{reason}` | Eventos perdidos: `send-failed` (agotados los reintentos), `queue-full`, `shutdown` |
+| `users_events_queue_size` | Eventos esperando a salir |
+
+---
+
 ## Configuración
 
 Todo se lee del entorno; [`.env.example`](.env.example) lo lista completo.
@@ -418,6 +525,12 @@ Todo se lee del entorno; [`.env.example`](.env.example) lo lista completo.
 | `APP_PROFILES_PREFIX` / `APP_PROFILES_EXCLUDED` | `mto-` / *(vacío)* | Qué roles de realm son perfiles |
 | `APP_SECURITY_EXPOSE_API_DOCS` | `false` (`true` en `dev`) | Swagger sin token |
 | `APP_CORS_ALLOWED_ORIGIN` | `http://localhost:4200` | Origen permitido |
+| `SPRING_RABBITMQ_HOST` / `_PORT` / `_USERNAME` / `_PASSWORD` / `_VIRTUAL_HOST` | `localhost` / `5672` / `guest` / `guest` / `/` (en `prod`, usuario y contraseña sin valor por defecto) | El broker de `mto-platform` |
+| `APP_RABBITMQ_ENABLED` | `true` (`false` en `test`) | Con `false` no se declara ni se publica nada y la aplicación arranca sin broker |
+| `APP_RABBITMQ_USERS_EXCHANGE` | `mto.users.exchange` | Exchange de los eventos |
+| `APP_RABBITMQ_PUBLISHER_QUEUE_CAPACITY` / `_CONFIRM_TIMEOUT` / `_RETRY_DELAYS` / `_DRAIN_TIMEOUT` | `1000` / `10s` / `1s,5s,30s` / `10s` | La cola en memoria, la espera del `ack`, las esperas entre reintentos (tantos reintentos como esperas) y lo que la parada espera a vaciarla |
+| `MESSAGING_SIGNATURE_SECRET` | *(vacío)* | Secreto de la firma HMAC de los mensajes; el mismo en todos los servicios. Vacío, la firma es un SHA-256 sin secreto |
+| `MANAGEMENT_HEALTH_RABBIT_ENABLED` | `false` | Si el broker entra en el health. Por defecto no: sin él se reintenta y lo perdido se cuenta |
 | `SERVER_PORT` | `8084` en `dev`, `8080` en `prod` | Puerto |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | `http://localhost:4318/v1/traces` | Colector de trazas de `mto-platform` |
 
@@ -483,8 +596,12 @@ docker run --rm -p 8084:8080 \
   -e KEYCLOAK_AUTH_SERVER_URL=http://auth.mto.local:8082 -e KEYCLOAK_REALM=mto \
   -e KEYCLOAK_ADMIN_CLIENT_ID=mto-users-svc -e KEYCLOAK_ADMIN_CLIENT_SECRET=mto-users-svc-secret \
   -e APP_CORS_ALLOWED_ORIGIN=http://localhost:4200 \
+  -e SPRING_RABBITMQ_HOST=host.docker.internal -e SPRING_RABBITMQ_USERNAME=mto -e SPRING_RABBITMQ_PASSWORD=mto \
   mto-users:local
 ```
+
+(`--add-host host.docker.internal:host-gateway` si el broker de `mto-platform` está en el host; con
+`-e APP_RABBITMQ_ENABLED=false` arranca sin él y no publica nada.)
 
 ---
 
@@ -492,7 +609,7 @@ docker run --rm -p 8084:8080 \
 
 ```bash
 ./mvnw compile
-./mvnw test                                   # unitarios y slices; sin Docker
+./mvnw test                                   # unitarios y slices; sin Docker ni broker (app.rabbitmq.enabled=false en el perfil test)
 ./mvnw verify                                 # ademas KeycloakUsersIT: Keycloak 26.1 real en Testcontainers (se salta sin Docker)
 ./mvnw test -Dtest=ApiAuthorizationRulesTest  # una clase
 ```
@@ -500,9 +617,14 @@ docker run --rm -p 8084:8080 \
 Una clase por capa: `SecurityLayerTest` (conversor de claims, audiencia, properties),
 `ApiAuthorizationRulesTest` (cada verbo pide su permiso y ninguno implica otro),
 `CorrelationIdFilterTest`, `KeycloakAdminClientGatewayTest` (traducción de errores con la cadena de
-recursos simulada), `BusinessLayerTest` (servicios y auditoría), `MapperLayerTest`,
+recursos simulada), `BusinessLayerTest` (servicios y auditoría: una línea y un evento por acción),
+`MessagingLayerTest` (los nombres del contrato, el sobre con su actor, su correlación y su hash,
+la firma, un envío con su confirm contra un `RabbitTemplate` simulado, la cola con sus reintentos y
+sus pérdidas, el cableado con `ApplicationContextRunner` —sin *publisher confirms* no arranca— y
+los ejemplos de `docs/messaging/examples/`), `MapperLayerTest`,
 `RestControllerLayerTest` (contrato JSON y `problem+json`), `GlobalExceptionHandlerTest`,
-`DtoValidationTest`, `MtoUsersApplicationTests` (el contexto entero sin Keycloak escuchando) y
+`DtoValidationTest`, `MtoUsersApplicationTests` (el contexto entero sin Keycloak escuchando y sin
+broker: el publicador es el NoOp) y
 `KeycloakUsersIT` (contra un Keycloak real: el ciclo de vida completo, que los seis roles de
 `realm-management` bastan, que un perfil llega expandido en el token, que el filtro por atributo
 combina con Y las claves distintas, que la lista de miembros de un rol no expande los compuestos,
@@ -518,15 +640,20 @@ src/main/java/com/alejandro/mtousers/
 ├── MtoUsersApplication.java
 ├── configuration/
 │   ├── keycloak/     KeycloakAdminProperties, KeycloakAdminClientConfiguration (bean Keycloak + gateway)
+│   ├── messaging/    UsersMessagingProperties, MessageSignatureProperties, MessagingConfiguration (publicador real o NoOp)
 │   ├── profiles/     ProfileProperties (prefijo y exclusiones)
 │   ├── security/     SecurityConfiguration, SecurityRoles, KeycloakJwtAuthenticationConverter, ...
 │   └── web/          CorrelationIdFilter, OpenApiDocumentationConfiguration
 ├── controller/       UserController, RoleController, ProfileController
 ├── service/          UserService, RoleService, ProfileService, AdminAuditLog (+ impl/)
 ├── keycloak/         KeycloakAdminGateway (puerto) y KeycloakAdminClientGateway (admin client)
+├── messaging/        el sobre (AsynchronousMessage, DomainEvent, MessageActor), UsersEventNames (el contrato),
+│                     UsersEventEnvelopeFactory, SensitiveKeys, MessagePayloadSignature, UsersEventSender,
+│                     UsersEventDispatcher (la cola y su hilo), RabbitUsersEventPublisher y NoOpUsersEventPublisher
 ├── dto/              records de la API
 ├── mapper/           MapStruct: UserMapper, RoleMapper, ProfileMapper
 └── exception/        excepciones de negocio y GlobalExceptionHandler (ProblemDetail)
 keycloak/             mto-users-partial-import.json, mto-users-dev.json, README.md
+docs/messaging/       examples/: un JSON real por forma de evento, comprobado por MessagingLayerTest
 http/                 mto-users-api.http
 ```

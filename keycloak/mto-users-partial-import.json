@@ -53,6 +53,9 @@
           "client": {
             "mto-users-api": [
               "users-read"
+            ],
+            "mto-notification-api": [
+              "notification-inbox"
             ]
           }
         }
@@ -71,6 +74,9 @@
               "users-profiles-write",
               "users-sessions-write",
               "users-credentials-write"
+            ],
+            "mto-notification-api": [
+              "notification-inbox"
             ]
           }
         }
@@ -90,6 +96,11 @@
               "users-profiles-write",
               "users-sessions-write",
               "users-credentials-write"
+            ],
+            "mto-notification-api": [
+              "notification-inbox",
+              "notification-activity-read",
+              "notification-access-read"
             ]
           }
         }

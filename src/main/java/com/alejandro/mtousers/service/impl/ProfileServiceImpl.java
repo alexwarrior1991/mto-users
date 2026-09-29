@@ -92,7 +92,7 @@ class ProfileServiceImpl implements ProfileService {
     public List<ProfileSummaryResponse> assignProfile(String userId, String profileName) {
         RoleRepresentation role = resolveProfile(profileName);
         keycloak.addRealmRoles(userId, List.of(role));
-        audit.record(AdminAction.PROFILE_ASSIGNED, userId, "profile=" + profileName);
+        audit.record(AdminAction.PROFILE_ASSIGNED, userId, UserServiceImpl.detail("profile", profileName));
         return getUserProfiles(userId);
     }
 
@@ -100,7 +100,7 @@ class ProfileServiceImpl implements ProfileService {
     public List<ProfileSummaryResponse> removeProfile(String userId, String profileName) {
         RoleRepresentation role = resolveProfile(profileName);
         keycloak.removeRealmRoles(userId, List.of(role));
-        audit.record(AdminAction.PROFILE_REMOVED, userId, "profile=" + profileName);
+        audit.record(AdminAction.PROFILE_REMOVED, userId, UserServiceImpl.detail("profile", profileName));
         return getUserProfiles(userId);
     }
 

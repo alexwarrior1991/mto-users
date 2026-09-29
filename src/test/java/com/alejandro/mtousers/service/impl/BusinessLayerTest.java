@@ -31,7 +31,10 @@ import com.alejandro.mtousers.keycloak.KeycloakAdminGateway;
 import com.alejandro.mtousers.mapper.ProfileMapper;
 import com.alejandro.mtousers.mapper.RoleMapper;
 import com.alejandro.mtousers.mapper.UserMapper;
+import com.alejandro.mtousers.messaging.SensitiveKeys;
+import com.alejandro.mtousers.messaging.UsersEventPublisher;
 import com.alejandro.mtousers.service.AdminAuditLog;
+import com.alejandro.mtousers.service.AdminAuditLog.AdminAction;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -48,6 +51,7 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -55,11 +59,13 @@ import java.util.Set;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -67,14 +73,17 @@ import static org.mockito.Mockito.when;
 
 /**
  * Los tres servicios con la puerta a Keycloak sustituida por un doble y los mappers reales. La
- * auditoría se comprueba leyendo lo que el logger de auditoría escribió.
+ * auditoría se comprueba leyendo lo que el logger de auditoría escribió, y el evento hacia
+ * {@code mto-notification} recogiendo lo que el publicador recibió: una línea y un evento por
+ * acción, con la misma información, y nunca una contraseña en ninguno de los dos.
  */
 class BusinessLayerTest {
 
     private static final String USER_ID = "2f1c9d1e-0000-4000-8000-000000000001";
 
     private final KeycloakAdminGateway keycloak = mock(KeycloakAdminGateway.class);
-    private final AdminAuditLog audit = new AdminAuditLog(new CurrentUserService());
+    private final RecordingPublisher events = new RecordingPublisher();
+    private final AdminAuditLog audit = new AdminAuditLog(new CurrentUserService(), events);
     private final ListAppender<ILoggingEvent> auditLines = new ListAppender<>();
 
     private final UserServiceImpl userService = new UserServiceImpl(keycloak, Mappers.getMapper(UserMapper.class), audit);
@@ -183,6 +192,10 @@ class BusinessLayerTest {
         userService.revokeSession(USER_ID, "session-1");
         verify(keycloak).deleteSession("session-1", false);
         assertTrue(onlyAuditLine().contains("action=SESSION_REVOKED"));
+        assertTrue(onlyAuditLine().contains("session=session-1"));
+        assertEquals(AdminAction.SESSION_REVOKED, onlyEvent().action());
+        assertEquals(USER_ID, onlyEvent().targetUserId());
+        assertEquals("session-1", onlyEvent().detail().get("session"));
     }
 
     /**
@@ -196,6 +209,7 @@ class BusinessLayerTest {
         assertThrows(SessionNotFoundException.class, () -> userService.revokeSession(USER_ID, "session-de-otro"));
         verify(keycloak, never()).deleteSession(anyString(), org.mockito.ArgumentMatchers.anyBoolean());
         assertEquals(0, auditLines.list.size(), "Lo que no se hizo no se audita");
+        assertEquals(0, events.published.size(), "Ni se publica");
     }
 
     @Test
@@ -204,6 +218,8 @@ class BusinessLayerTest {
 
         verify(keycloak).logoutUser(USER_ID);
         assertTrue(onlyAuditLine().contains("action=ALL_SESSIONS_REVOKED"));
+        assertEquals(AdminAction.ALL_SESSIONS_REVOKED, onlyEvent().action());
+        assertEquals(Map.of(), onlyEvent().detail());
     }
 
     /**
@@ -227,6 +243,8 @@ class BusinessLayerTest {
         userService.revokeOfflineSession(USER_ID, "offline-2");
         verify(keycloak).deleteSession("offline-2", true);
         assertTrue(onlyAuditLine().contains("action=OFFLINE_SESSION_REVOKED"));
+        assertEquals(AdminAction.OFFLINE_SESSION_REVOKED, onlyEvent().action());
+        assertEquals("offline-2", onlyEvent().detail().get("session"));
     }
 
     @Test
@@ -252,12 +270,15 @@ class BusinessLayerTest {
         verify(keycloak).deleteSession("offline-2", true);
         assertTrue(onlyAuditLine().contains("action=ALL_OFFLINE_SESSIONS_REVOKED"));
         assertTrue(onlyAuditLine().contains("sessions=2"));
+        assertEquals(2, onlyEvent().detail().get("sessions"));
 
         // Sin tokens offline no hay nada que cerrar y tampoco es un error.
         auditLines.list.clear();
+        events.published.clear();
         when(keycloak.findClientsWithOfflineTokens(USER_ID)).thenReturn(List.of());
         userService.revokeAllOfflineSessions(USER_ID);
         assertTrue(onlyAuditLine().contains("sessions=0"));
+        assertEquals(0, onlyEvent().detail().get("sessions"));
     }
 
     /**
@@ -281,6 +302,9 @@ class BusinessLayerTest {
         verify(keycloak).deleteCredential(USER_ID, "cred-2");
         assertTrue(onlyAuditLine().contains("action=CREDENTIAL_DELETED"));
         assertTrue(onlyAuditLine().contains("type=otp"), onlyAuditLine());
+        assertEquals(AdminAction.CREDENTIAL_DELETED, onlyEvent().action());
+        assertEquals("cred-2", onlyEvent().detail().get("credential"));
+        assertEquals("otp", onlyEvent().detail().get("type"));
     }
 
     @Test
@@ -290,6 +314,7 @@ class BusinessLayerTest {
         assertThrows(CredentialNotFoundException.class, () -> userService.deleteCredential(USER_ID, "cred-de-otro"));
         verify(keycloak, never()).deleteCredential(anyString(), anyString());
         assertEquals(0, auditLines.list.size());
+        assertEquals(0, events.published.size());
     }
 
     @Test
@@ -312,8 +337,20 @@ class BusinessLayerTest {
         String line = onlyAuditLine();
         assertTrue(line.contains("action=USER_CREATED"));
         assertTrue(line.contains("targetUserId=" + USER_ID));
-        assertTrue(line.contains("temporaryPassword=true"));
+        assertTrue(line.contains("targetUsername=ana.nueva"));
+        assertTrue(line.contains("temporaryCredential=true"));
         assertFalse(line.contains("Secreta.123"), "La contraseña no puede aparecer en la auditoría");
+
+        // Y el evento cuenta lo mismo, con el nombre y sin la contraseña: es lo que mto-notification
+        // enseña a quien administra usuarios.
+        Published event = onlyEvent();
+        assertEquals(AdminAction.USER_CREATED, event.action());
+        assertEquals(USER_ID, event.targetUserId());
+        assertEquals("ana.nueva", event.targetUsername());
+        assertEquals(Boolean.TRUE, event.detail().get("enabled"));
+        assertEquals(Boolean.TRUE, event.detail().get("temporaryCredential"));
+        assertEquals(List.of(RequiredAction.UPDATE_PASSWORD), event.detail().get("requiredActions"));
+        assertFalse(event.detail().toString().contains("Secreta.123"), "La contraseña no puede viajar en el evento");
     }
 
     @Test
@@ -347,7 +384,11 @@ class BusinessLayerTest {
         assertEquals("ana@mto.local", sent.getValue().getEmail());
         assertEquals(Boolean.TRUE, sent.getValue().isEmailVerified());
         assertEquals(List.of("ops"), sent.getValue().getAttributes().get("dept"));
-        assertTrue(onlyAuditLine().contains("fields=lastName emailVerified"));
+        assertTrue(onlyAuditLine().contains("targetUsername=ana.uno"));
+        assertTrue(onlyAuditLine().contains("fields=[lastName, emailVerified]"));
+        assertEquals(AdminAction.USER_UPDATED, onlyEvent().action());
+        assertEquals("ana.uno", onlyEvent().targetUsername());
+        assertEquals(List.of("lastName", "emailVerified"), onlyEvent().detail().get("fields"));
     }
 
     /** La linea de auditoria enumera lo que venia en la peticion, no lo que de verdad cambio. */
@@ -358,7 +399,7 @@ class BusinessLayerTest {
         userService.update(USER_ID, new UpdateUserRequest("Ana", "Uno", "ana@mto.local", true,
                 Map.of("dept", List.of("ops"))));
 
-        assertTrue(onlyAuditLine().contains("fields=firstName lastName email emailVerified attributes"), onlyAuditLine());
+        assertTrue(onlyAuditLine().contains("fields=[firstName, lastName, email, emailVerified, attributes]"), onlyAuditLine());
     }
 
     @Test
@@ -373,12 +414,15 @@ class BusinessLayerTest {
         verify(keycloak).updateUser(org.mockito.ArgumentMatchers.eq(USER_ID), sent.capture());
         assertEquals(Boolean.FALSE, sent.getValue().isEnabled());
         assertTrue(onlyAuditLine().contains("action=USER_DISABLED"));
+        assertEquals(AdminAction.USER_DISABLED, onlyEvent().action());
+        assertEquals("ana.uno", onlyEvent().targetUsername());
 
         userService.setEnabled(USER_ID, true);
         verify(keycloak, org.mockito.Mockito.times(2)).updateUser(org.mockito.ArgumentMatchers.eq(USER_ID), sent.capture());
         assertEquals(Boolean.TRUE, sent.getValue().isEnabled());
         assertTrue(auditLines.list.getLast().getFormattedMessage().contains("action=USER_ENABLED"),
                 "Cada sentido deja su propia accion");
+        assertEquals(AdminAction.USER_ENABLED, events.published.getLast().action(), "Y su propio evento");
     }
 
     @Test
@@ -390,6 +434,10 @@ class BusinessLayerTest {
         assertTrue(line.contains("action=PASSWORD_RESET"));
         assertTrue(line.contains("temporary=true"));
         assertFalse(line.contains("Secreta.123"));
+        assertEquals(AdminAction.PASSWORD_RESET, onlyEvent().action());
+        assertEquals(Boolean.TRUE, onlyEvent().detail().get("temporary"));
+        assertFalse(onlyEvent().detail().toString().contains("Secreta.123"), "Ni en el evento");
+        assertNull(onlyEvent().targetUsername(), "Solo se conoce el id: no se pide el usuario para eso");
     }
 
     @Test
@@ -399,14 +447,28 @@ class BusinessLayerTest {
 
         verify(keycloak).executeActionsEmail(USER_ID, List.of("UPDATE_PASSWORD", "VERIFY_EMAIL"), 600, "mto-frontend", "http://localhost:4200");
         assertTrue(onlyAuditLine().contains("actions=[UPDATE_PASSWORD, VERIFY_EMAIL]"));
+        assertEquals(AdminAction.ACTIONS_EMAIL_SENT, onlyEvent().action());
+        assertEquals(List.of("UPDATE_PASSWORD", "VERIFY_EMAIL"), onlyEvent().detail().get("actions"));
+        assertEquals("mto-frontend", onlyEvent().detail().get("clientId"));
     }
 
+    /**
+     * Se lee el usuario antes de borrarlo: despues nadie puede resolver el id, y un aviso «se ha
+     * borrado 2f1c9d1e-...» no le dice nada a quien lo lee.
+     */
     @Test
-    void deleteAudits() {
+    void deleteReadsTheUsernameFirstAndAuditsWithIt() {
+        when(keycloak.findUser(USER_ID)).thenReturn(user("ana.baja"));
+
         userService.delete(USER_ID);
 
-        verify(keycloak).deleteUser(USER_ID);
+        var order = inOrder(keycloak);
+        order.verify(keycloak).findUser(USER_ID);
+        order.verify(keycloak).deleteUser(USER_ID);
         assertTrue(onlyAuditLine().contains("action=USER_DELETED actor=unknown"));
+        assertTrue(onlyAuditLine().contains("targetUsername=ana.baja"));
+        assertEquals(AdminAction.USER_DELETED, onlyEvent().action());
+        assertEquals("ana.baja", onlyEvent().targetUsername());
     }
 
     // --- Roles ------------------------------------------------------------------------------------
@@ -445,6 +507,9 @@ class BusinessLayerTest {
         assertEquals(List.of(new ClientRoleAssignment("mto-stock-api", List.of("stock-read", "stock-write"))), response.clientRoles());
         assertTrue(onlyAuditLine().contains("action=CLIENT_ROLES_ADDED"));
         assertTrue(onlyAuditLine().contains("client=mto-stock-api roles=[stock-write]"));
+        assertEquals(AdminAction.CLIENT_ROLES_ADDED, onlyEvent().action());
+        assertEquals("mto-stock-api", onlyEvent().detail().get("client"));
+        assertEquals(List.of("stock-write"), onlyEvent().detail().get("roles"));
     }
 
     @Test
@@ -471,6 +536,8 @@ class BusinessLayerTest {
         assertEquals(List.of(new ClientRoleAssignment("mto-stock-api", List.of("stock-read"))), response.clientRoles());
         assertTrue(onlyAuditLine().contains("action=CLIENT_ROLES_REMOVED"));
         assertTrue(onlyAuditLine().contains("client=mto-stock-api roles=[stock-write]"));
+        assertEquals(AdminAction.CLIENT_ROLES_REMOVED, onlyEvent().action());
+        assertEquals(List.of("stock-write"), onlyEvent().detail().get("roles"));
     }
 
     @Test
@@ -553,6 +620,9 @@ class BusinessLayerTest {
         assertEquals(2, auditLines.list.size());
         assertTrue(auditLines.list.get(0).getFormattedMessage().contains("action=PROFILE_ASSIGNED"));
         assertTrue(auditLines.list.get(1).getFormattedMessage().contains("action=PROFILE_REMOVED"));
+        assertEquals(List.of(AdminAction.PROFILE_ASSIGNED, AdminAction.PROFILE_REMOVED),
+                events.published.stream().map(Published::action).toList());
+        assertEquals("mto-users-viewer", events.published.getFirst().detail().get("profile"));
     }
 
     @Test
@@ -574,6 +644,31 @@ class BusinessLayerTest {
         String line = auditLines.list.getFirst().getFormattedMessage();
         assertNotNull(line);
         return line;
+    }
+
+    private Published onlyEvent() {
+        assertEquals(1, events.published.size(), "Exactamente un evento por acción");
+        return events.published.getFirst();
+    }
+
+    /** Lo que AdminAuditLog le entrega al publicador, tal cual: el detalle es el mismo mapa que imprime la línea. */
+    private record Published(AdminAction action, String targetUserId, String targetUsername, Map<String, Object> detail) {
+    }
+
+    /**
+     * Records what each service tells, and applies the one check of the real envelope that depends
+     * on what the services put in the detail: a key that smells like a credential would fail the
+     * request in production, and only here does every action run with its real detail keys.
+     */
+    private static final class RecordingPublisher implements UsersEventPublisher {
+
+        private final List<Published> published = new ArrayList<>();
+
+        @Override
+        public void publish(AdminAction action, String targetUserId, String targetUsername, Map<String, Object> detail) {
+            SensitiveKeys.assertNone(detail);
+            published.add(new Published(action, targetUserId, targetUsername, detail));
+        }
     }
 
     private static KeycloakAdminProperties keycloakProperties() {

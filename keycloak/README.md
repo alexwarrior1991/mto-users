@@ -25,6 +25,12 @@ Perfiles (roles compuestos de realm): `mto-users-viewer` (`users-read`), `mto-us
 (todo menos `users-delete`) y `mto-users-admin` (todo). `mto-ops`, que vive en `mto-platform`,
 añade `users-read`, `ops-metrics` y `ops-write`.
 
+Los tres perfiles llevan también roles de `mto-notification-api`: `notification-inbox` (la bandeja
+de avisos) en los tres, y `notification-activity-read` y `notification-access-read` (el registro de
+actividad y los accesos: quién entra y quién falla al entrar) en `mto-users-admin`. Un compuesto solo
+puede nombrar roles de un cliente que ya exista, así que `apply-partials.sh` aplica la parcial de
+`mto-notification` **antes** que esta; `mto-platform/keycloak/check_realm_consistency.py` lo comprueba.
+
 ## Los roles de `realm-management` de la cuenta de servicio
 
 Una importación parcial **no asigna roles a la cuenta de servicio de un cliente**. Por eso el partial
@@ -93,6 +99,8 @@ atributos y Keycloak empieza a descartar `firstName` y `lastName` sin avisar.
    `audiencia-mto-users-api`: sin él ningún token del frontal nombra a esta API en `aud` y todo
    responde 401 (ver *el error más fácil de cometer* en `mto-stock/keycloak/README.md`).
 4. Dar a las personas un perfil: `mto-users-viewer`, `mto-users-manager` o `mto-users-admin`.
+5. Que el broker al que apunta `SPRING_RABBITMQ_*` sea el de la plataforma: los eventos de este
+   servicio los consume `mto-notification` desde allí, y no hay nada de eso en el realm.
 
 ## Usuarios de desarrollo (`mto-users-dev.json`)
 

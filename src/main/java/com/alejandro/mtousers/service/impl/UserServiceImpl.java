@@ -23,7 +23,10 @@ import org.keycloak.representations.idm.UserRepresentation;
 import org.keycloak.representations.idm.UserSessionRepresentation;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 @Service
 class UserServiceImpl implements UserService {
@@ -72,9 +75,10 @@ class UserServiceImpl implements UserService {
             representation.setEnabled(true);
         }
         String userId = keycloak.createUser(representation);
-        audit.record(AdminAction.USER_CREATED, userId, "username=" + request.username()
-                + " temporaryPassword=" + (request.temporaryPassword() != null)
-                + " requiredActions=" + (request.requiredActions() == null ? List.of() : request.requiredActions()));
+        audit.record(AdminAction.USER_CREATED, userId, request.username(), detail(
+                "enabled", representation.isEnabled(),
+                "temporaryCredential", request.temporaryPassword() != null,
+                "requiredActions", request.requiredActions() == null ? List.of() : request.requiredActions()));
         return get(userId);
     }
 
@@ -85,7 +89,8 @@ class UserServiceImpl implements UserService {
         UserRepresentation representation = keycloak.findUser(userId);
         userMapper.applyUpdate(request, representation);
         keycloak.updateUser(userId, representation);
-        audit.record(AdminAction.USER_UPDATED, userId, "fields=" + changedFields(request));
+        audit.record(AdminAction.USER_UPDATED, userId, representation.getUsername(),
+                detail("fields", changedFields(request)));
         return get(userId);
     }
 
@@ -94,27 +99,34 @@ class UserServiceImpl implements UserService {
         UserRepresentation representation = keycloak.findUser(userId);
         representation.setEnabled(enabled);
         keycloak.updateUser(userId, representation);
-        audit.record(enabled ? AdminAction.USER_ENABLED : AdminAction.USER_DISABLED, userId, "username=" + representation.getUsername());
+        audit.record(enabled ? AdminAction.USER_ENABLED : AdminAction.USER_DISABLED, userId,
+                representation.getUsername(), Map.of());
         return get(userId);
     }
 
+    /**
+     * Se lee el usuario antes de borrarlo para que el rastro lleve su nombre: después del borrado
+     * nadie puede resolver el id, y un aviso «se ha borrado el usuario 2f1c9d1e-…» no le dice nada
+     * a quien lo lee.
+     */
     @Override
     public void delete(String userId) {
+        UserRepresentation representation = keycloak.findUser(userId);
         keycloak.deleteUser(userId);
-        audit.record(AdminAction.USER_DELETED, userId, null);
+        audit.record(AdminAction.USER_DELETED, userId, representation.getUsername(), Map.of());
     }
 
     @Override
     public void resetPassword(String userId, ResetPasswordRequest request) {
         keycloak.resetPassword(userId, request.password(), request.isTemporary());
-        audit.record(AdminAction.PASSWORD_RESET, userId, "temporary=" + request.isTemporary());
+        audit.record(AdminAction.PASSWORD_RESET, userId, detail("temporary", request.isTemporary()));
     }
 
     @Override
     public void executeActionsEmail(String userId, ExecuteActionsEmailRequest request) {
         List<String> actions = request.actions().stream().map(RequiredAction::name).toList();
         keycloak.executeActionsEmail(userId, actions, request.lifespanSeconds(), request.clientId(), request.redirectUri());
-        audit.record(AdminAction.ACTIONS_EMAIL_SENT, userId, "actions=" + actions);
+        audit.record(AdminAction.ACTIONS_EMAIL_SENT, userId, detail("actions", actions, "clientId", request.clientId()));
     }
 
     @Override
@@ -125,7 +137,7 @@ class UserServiceImpl implements UserService {
     @Override
     public void revokeAllSessions(String userId) {
         keycloak.logoutUser(userId);
-        audit.record(AdminAction.ALL_SESSIONS_REVOKED, userId, null);
+        audit.record(AdminAction.ALL_SESSIONS_REVOKED, userId, Map.of());
     }
 
     /**
@@ -142,7 +154,7 @@ class UserServiceImpl implements UserService {
             throw new SessionNotFoundException(sessionId);
         }
         keycloak.deleteSession(sessionId, false);
-        audit.record(AdminAction.SESSION_REVOKED, userId, "session=" + sessionId);
+        audit.record(AdminAction.SESSION_REVOKED, userId, detail("session", sessionId));
     }
 
     /**
@@ -163,7 +175,7 @@ class UserServiceImpl implements UserService {
     public void revokeAllOfflineSessions(String userId) {
         List<String> sessionIds = offlineSessions(userId).stream().map(UserSessionRepresentation::getId).toList();
         sessionIds.forEach(sessionId -> keycloak.deleteSession(sessionId, true));
-        audit.record(AdminAction.ALL_OFFLINE_SESSIONS_REVOKED, userId, "sessions=" + sessionIds.size());
+        audit.record(AdminAction.ALL_OFFLINE_SESSIONS_REVOKED, userId, detail("sessions", sessionIds.size()));
     }
 
     /** Misma comprobacion que en una sesion normal, y por el mismo motivo. */
@@ -176,7 +188,7 @@ class UserServiceImpl implements UserService {
             throw new SessionNotFoundException(sessionId);
         }
         keycloak.deleteSession(sessionId, true);
-        audit.record(AdminAction.OFFLINE_SESSION_REVOKED, userId, "session=" + sessionId);
+        audit.record(AdminAction.OFFLINE_SESSION_REVOKED, userId, detail("session", sessionId));
     }
 
     @Override
@@ -198,7 +210,7 @@ class UserServiceImpl implements UserService {
                 .orElseThrow(() -> new CredentialNotFoundException(credentialId));
 
         keycloak.deleteCredential(userId, credentialId);
-        audit.record(AdminAction.CREDENTIAL_DELETED, userId, "credential=" + credentialId + " type=" + type);
+        audit.record(AdminAction.CREDENTIAL_DELETED, userId, detail("credential", credentialId, "type", type));
     }
 
     private List<UserSessionRepresentation> offlineSessions(String userId) {
@@ -207,23 +219,33 @@ class UserServiceImpl implements UserService {
                 .toList();
     }
 
-    private static String changedFields(UpdateUserRequest request) {
-        StringBuilder fields = new StringBuilder();
+    /** Lo que venia en la peticion, no lo que de verdad cambio: es lo que el rastro enumera. */
+    private static List<String> changedFields(UpdateUserRequest request) {
+        List<String> fields = new ArrayList<>();
         if (request.firstName() != null) {
-            fields.append("firstName ");
+            fields.add("firstName");
         }
         if (request.lastName() != null) {
-            fields.append("lastName ");
+            fields.add("lastName");
         }
         if (request.email() != null) {
-            fields.append("email ");
+            fields.add("email");
         }
         if (request.emailVerified() != null) {
-            fields.append("emailVerified ");
+            fields.add("emailVerified");
         }
         if (request.attributes() != null) {
-            fields.append("attributes ");
+            fields.add("attributes");
         }
-        return fields.toString().trim();
+        return fields;
+    }
+
+    /** Un mapa con orden, porque el rastro se lee: {@code Map.of} lo barajaria y no admite nulos. */
+    static Map<String, Object> detail(Object... keysAndValues) {
+        Map<String, Object> detail = new LinkedHashMap<>();
+        for (int i = 0; i < keysAndValues.length; i += 2) {
+            detail.put((String) keysAndValues[i], keysAndValues[i + 1]);
+        }
+        return detail;
     }
 }

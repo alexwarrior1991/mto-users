@@ -15,6 +15,12 @@ spring:
           # Sin valor por defecto a proposito: si la variable falta, la aplicacion no arranca. Es
           # preferible a arrancar apuntando a un emisor de ejemplo y que nadie se entere.
           issuer-uri: ${KEYCLOAK_ISSUER_URI}
+  rabbitmq:
+    # Sin usuario ni contrasena por defecto: un despliegue con el broker activo no debe publicar
+    # como guest. Con APP_RABBITMQ_ENABLED=false no se usan y pueden faltar.
+    host: ${SPRING_RABBITMQ_HOST:localhost}
+    username: ${SPRING_RABBITMQ_USERNAME:}
+    password: ${SPRING_RABBITMQ_PASSWORD:}
 
 app:
   security:
