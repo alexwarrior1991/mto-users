@@ -194,6 +194,11 @@ fijar una contraseña temporal deja entrar a su dueño con lo que el administrad
 quitar una credencial puede ser quitarle el **segundo factor**, que es precisamente lo que protege
 la cuenta. Ninguno de los dos implica al otro.
 
+**Sin CORS propio.** Todo navegador llega por `mto-gateway`, que resuelve el CORS y quita `Origin`
+antes de llamar a este servicio. Aquí no hay `.cors()` ni `OPTIONS` abierto: un *preflight* que
+llegara directamente pide token como cualquier otra petición, y nada contesta con
+`Access-Control-Allow-Origin` (`ApiAuthorizationRulesTest` lo fija).
+
 ---
 
 ## API
@@ -524,7 +529,6 @@ Todo se lee del entorno; [`.env.example`](.env.example) lo lista completo.
 | `KEYCLOAK_CONNECT_TIMEOUT` / `KEYCLOAK_READ_TIMEOUT` / `KEYCLOAK_POOL_SIZE` | `2s` / `10s` / `10` | Cliente HTTP hacia Keycloak |
 | `APP_PROFILES_PREFIX` / `APP_PROFILES_EXCLUDED` | `mto-` / *(vacío)* | Qué roles de realm son perfiles |
 | `APP_SECURITY_EXPOSE_API_DOCS` | `false` (`true` en `dev`) | Swagger sin token |
-| `APP_CORS_ALLOWED_ORIGIN` | `http://localhost:4200` | Origen permitido |
 | `SPRING_RABBITMQ_HOST` / `_PORT` / `_USERNAME` / `_PASSWORD` / `_VIRTUAL_HOST` | `localhost` / `5672` / `guest` / `guest` / `/` (en `prod`, usuario y contraseña sin valor por defecto) | El broker de `mto-platform` |
 | `APP_RABBITMQ_ENABLED` | `true` (`false` en `test`) | Con `false` no se declara ni se publica nada y la aplicación arranca sin broker |
 | `APP_RABBITMQ_USERS_EXCHANGE` | `mto.users.exchange` | Exchange de los eventos |
@@ -580,7 +584,7 @@ Para probar una construcción local contra esa misma infraestructura, el `compos
 repositorio trae solo la aplicación:
 
 ```bash
-cp .env.example .env    # KEYCLOAK_ISSUER_URI, KEYCLOAK_ADMIN_CLIENT_SECRET y APP_CORS_ALLOWED_ORIGIN son obligatorias
+cp .env.example .env    # KEYCLOAK_ISSUER_URI y KEYCLOAK_ADMIN_CLIENT_SECRET son obligatorias
 docker compose up -d --build
 curl -s http://localhost:8084/actuator/health
 ```
@@ -595,7 +599,6 @@ docker run --rm -p 8084:8080 \
   -e KEYCLOAK_USERS_CLIENT_ID=mto-users-api -e KEYCLOAK_AUDIENCE=mto-users-api \
   -e KEYCLOAK_AUTH_SERVER_URL=http://auth.mto.local:8082 -e KEYCLOAK_REALM=mto \
   -e KEYCLOAK_ADMIN_CLIENT_ID=mto-users-svc -e KEYCLOAK_ADMIN_CLIENT_SECRET=mto-users-svc-secret \
-  -e APP_CORS_ALLOWED_ORIGIN=http://localhost:4200 \
   -e SPRING_RABBITMQ_HOST=host.docker.internal -e SPRING_RABBITMQ_USERNAME=mto -e SPRING_RABBITMQ_PASSWORD=mto \
   mto-users:local
 ```

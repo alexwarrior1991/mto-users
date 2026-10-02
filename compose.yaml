@@ -32,7 +32,6 @@ services:
       KEYCLOAK_READ_TIMEOUT: ${KEYCLOAK_READ_TIMEOUT:-10s}
       APP_PROFILES_PREFIX: ${APP_PROFILES_PREFIX:-mto-}
       APP_SECURITY_EXPOSE_API_DOCS: ${APP_SECURITY_EXPOSE_API_DOCS:-false}
-      APP_CORS_ALLOWED_ORIGIN: ${APP_CORS_ALLOWED_ORIGIN:?APP_CORS_ALLOWED_ORIGIN must be set}
       # El broker de mto-platform, para publicar quien hizo cada cambio hacia mto-notification.
       SPRING_RABBITMQ_HOST: ${SPRING_RABBITMQ_HOST:-host.docker.internal}
       SPRING_RABBITMQ_PORT: ${SPRING_RABBITMQ_PORT:-5672}

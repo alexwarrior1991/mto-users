@@ -60,11 +60,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "app.security.principal-claim=preferred_username",
         "app.security.audience-validation-enabled=false",
         "app.security.expose-api-docs=false",
-        "app.security.cors.allowed-origins=http://localhost:4200",
-        "app.security.cors.allowed-methods=GET,POST,PUT,PATCH,DELETE",
-        "app.security.cors.allowed-headers=Authorization,Content-Type",
-        "app.security.cors.allow-credentials=false",
-        "app.security.cors.max-age=3600",
         "spring.security.oauth2.resourceserver.jwt.issuer-uri=http://localhost:8082/realms/mto"
 })
 class ApiAuthorizationRulesTest {
@@ -130,15 +125,25 @@ class ApiAuthorizationRulesTest {
         }
 
         @Test
-        void probesAndPreflightStayOpen() throws Exception {
+        void probesStayOpen() throws Exception {
             // 404 y no 401: la ruta está permitida; Actuator no forma parte de este slice.
             mockMvc.perform(get("/actuator/health")).andExpect(status().isNotFound());
             mockMvc.perform(get("/actuator/health/readiness")).andExpect(status().isNotFound());
             mockMvc.perform(get("/actuator/info")).andExpect(status().isNotFound());
+        }
+
+        /**
+         * El CORS es de mto-gateway, que quita {@code Origin} antes de llamar. Aquí un preflight no
+         * se aprueba: pide token como cualquier otra petición y no vuelve con
+         * {@code Access-Control-Allow-Origin}.
+         */
+        @Test
+        void corsIsLeftToTheGateway() throws Exception {
             mockMvc.perform(options(USERS)
                             .header("Origin", "http://localhost:4200")
                             .header("Access-Control-Request-Method", "POST"))
-                    .andExpect(status().isOk());
+                    .andExpect(status().isUnauthorized())
+                    .andExpect(header().doesNotExist("Access-Control-Allow-Origin"));
         }
 
         @Test
