@@ -99,11 +99,14 @@ jobs:
       # Building does not prove the container starts. mto-users has no database: it only needs the
       # Keycloak settings, and none of them is contacted at boot (JWK Set and service-account token
       # are both lazy), so the smoke test runs with nothing else around.
+      #
+      # It runs with an arbitrary UID in group 0 (--user), as OpenShift does under the restricted-v2
+      # SCC: starting as the Dockerfile's 1001 does not prove it starts as the one the cluster assigns.
       - name: Smoke test the image
         if: ${{ github.event_name != 'push' || github.ref != 'refs/heads/master' }}
         run: |
           IMAGE=$(echo "${{ steps.meta.outputs.tags }}" | head -1)
-          docker run -d --name mto-users-smoke -p 8084:8080 \
+          docker run -d --name mto-users-smoke --user 1000680000:0 -p 8084:8080 \
             -e SPRING_PROFILES_ACTIVE=prod \
             -e SERVER_PORT=8080 \
             -e KEYCLOAK_ISSUER_URI=http://localhost:8082/realms/mto \
