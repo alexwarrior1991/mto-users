@@ -171,11 +171,25 @@ class UserServiceImpl implements UserService {
         return userMapper.toSessionResponses(offlineSessions(userId));
     }
 
+    /**
+     * El barrido no se corta a medias. Cada id se cierra una sola vez, y una sesion que ya no
+     * existe cuando le toca (caduco, o la cerro otra peticion entre el listado y el cierre) es
+     * justo lo que se pedia: se sigue con las demas. Antes, la primera que faltaba abortaba el
+     * bucle con un 404, dejando vivas las siguientes y sin rastro de las ya cerradas. Cualquier
+     * otro fallo (Keycloak caido, la cuenta de servicio rechazada) si se propaga.
+     */
     @Override
     public void revokeAllOfflineSessions(String userId) {
-        List<String> sessionIds = offlineSessions(userId).stream().map(UserSessionRepresentation::getId).toList();
-        sessionIds.forEach(sessionId -> keycloak.deleteSession(sessionId, true));
-        audit.record(AdminAction.ALL_OFFLINE_SESSIONS_REVOKED, userId, detail("sessions", sessionIds.size()));
+        int closed = 0;
+        for (UserSessionRepresentation session : offlineSessions(userId)) {
+            try {
+                keycloak.deleteSession(session.getId(), true);
+                closed++;
+            } catch (SessionNotFoundException alreadyGone) {
+                // Ya no esta: nada que cerrar.
+            }
+        }
+        audit.record(AdminAction.ALL_OFFLINE_SESSIONS_REVOKED, userId, detail("sessions", closed));
     }
 
     /** Misma comprobacion que en una sesion normal, y por el mismo motivo. */
@@ -213,10 +227,27 @@ class UserServiceImpl implements UserService {
         audit.record(AdminAction.CREDENTIAL_DELETED, userId, detail("credential", credentialId, "type", type));
     }
 
+    /**
+     * Una vez cada sesion. Keycloak las da cliente a cliente, y una misma sesion offline por la
+     * que han pasado dos clientes sale bajo los dos: se queda la primera, con los clientes de
+     * todas las apariciones.
+     */
     private List<UserSessionRepresentation> offlineSessions(String userId) {
-        return keycloak.findClientsWithOfflineTokens(userId).stream()
-                .flatMap(clientUuid -> keycloak.listOfflineSessions(userId, clientUuid).stream())
-                .toList();
+        Map<String, UserSessionRepresentation> byId = new LinkedHashMap<>();
+        for (String clientUuid : keycloak.findClientsWithOfflineTokens(userId)) {
+            for (UserSessionRepresentation session : keycloak.listOfflineSessions(userId, clientUuid)) {
+                UserSessionRepresentation known = byId.putIfAbsent(session.getId(), session);
+                if (known != null && session.getClients() != null) {
+                    Map<String, String> clients = new LinkedHashMap<>();
+                    if (known.getClients() != null) {
+                        clients.putAll(known.getClients());
+                    }
+                    clients.putAll(session.getClients());
+                    known.setClients(clients);
+                }
+            }
+        }
+        return List.copyOf(byId.values());
     }
 
     /** Lo que venia en la peticion, no lo que de verdad cambio: es lo que el rastro enumera. */

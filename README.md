@@ -222,8 +222,8 @@ que es el valor del perfil `dev`).
 | `GET /api/v1/users/{userId}/sessions` | Sesiones abiertas: `[{id, username, ipAddress, startedAt, lastAccessAt, clients}]` |
 | `DELETE /api/v1/users/{userId}/sessions` | Cierra todas. `204`, idempotente |
 | `DELETE /api/v1/users/{userId}/sessions/{sessionId}` | Cierra una. `204`; `404 SES-404` si esa sesión no es de ese usuario |
-| `GET /api/v1/users/{userId}/offline-sessions` | Sesiones offline (tokens con `offline_access`), mismo cuerpo que las normales |
-| `DELETE /api/v1/users/{userId}/offline-sessions` | Cierra todas las offline. `204`, idempotente |
+| `GET /api/v1/users/{userId}/offline-sessions` | Sesiones offline (tokens con `offline_access`), mismo cuerpo que las normales. Cada sesión sale una vez, con todos sus clientes |
+| `DELETE /api/v1/users/{userId}/offline-sessions` | Cierra todas las offline, cada una una vez; una que ya no exista al llegarle el turno no corta el barrido. `204`, idempotente |
 | `DELETE /api/v1/users/{userId}/offline-sessions/{sessionId}` | Cierra una offline. `204`; `404 SES-404` si no es de ese usuario |
 | `GET /api/v1/users/{userId}/credentials` | `[{id, type, userLabel, createdAt}]`. Sin secretos y sin metadatos de cifrado |
 | `DELETE /api/v1/users/{userId}/credentials/{credentialId}` | Quita una credencial. `204`; `404 CRED-404` si no es de ese usuario |
