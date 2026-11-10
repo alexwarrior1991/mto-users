@@ -9,6 +9,7 @@ import com.alejandro.mtousers.dto.ClientRoleAssignment;
 import com.alejandro.mtousers.dto.CreateUserRequest;
 import com.alejandro.mtousers.dto.PageResponse;
 import com.alejandro.mtousers.dto.ProfileSummaryResponse;
+import com.alejandro.mtousers.dto.ExecuteActionsEmailRequest;
 import com.alejandro.mtousers.dto.RequiredAction;
 import com.alejandro.mtousers.dto.ResetPasswordRequest;
 import com.alejandro.mtousers.dto.RoleNamesRequest;
@@ -289,6 +290,17 @@ class RestControllerLayerTest {
         mockMvc.perform(post(USERS).with(admin()).contentType(MediaType.APPLICATION_JSON).content("{nope"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.errorCode").value("REQ-400"));
+    }
+
+    @Test
+    void actionsEmailAnswers202AndPassesTheRequest() throws Exception {
+        mockMvc.perform(post(USERS + "/" + USER_ID + "/execute-actions-email").with(admin())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"actions\":[\"UPDATE_PASSWORD\",\"VERIFY_EMAIL\"],\"lifespanSeconds\":600}"))
+                .andExpect(status().isAccepted());
+
+        verify(userService).executeActionsEmail(USER_ID, new ExecuteActionsEmailRequest(
+                List.of(RequiredAction.UPDATE_PASSWORD, RequiredAction.VERIFY_EMAIL), 600, null, null));
     }
 
     @Test

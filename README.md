@@ -163,7 +163,8 @@ realm llamado como un permiso nunca lo conceda.
 | Operación | Permiso (`mto-users-api`) |
 |---|---|
 | `GET`/`HEAD /api/v1/users/**` (usuarios, roles, perfiles, catálogos) | `users-read` |
-| `POST /api/v1/users`, `PUT /{id}`, `PATCH /{id}/enabled`, `POST /{id}/execute-actions-email` | `users-write` |
+| `POST /api/v1/users`, `PUT /{id}`, `PATCH /{id}/enabled` | `users-write` |
+| `POST /{id}/execute-actions-email` | `users-write`; con `UPDATE_PASSWORD` o `CONFIGURE_TOTP` entre las acciones, **además** `users-password-reset` |
 | `DELETE /api/v1/users/{id}` | `users-delete` |
 | `PUT`/`DELETE /{id}/roles/clients/{clientId}` | `users-roles-write` |
 | `POST /{id}/reset-password` | `users-password-reset` |
@@ -194,6 +195,18 @@ fijar una contraseña temporal deja entrar a su dueño con lo que el administrad
 quitar una credencial puede ser quitarle el **segundo factor**, que es precisamente lo que protege
 la cuenta. Ninguno de los dos implica al otro.
 
+El correo de acciones es la única ruta cuyo permiso depende del cuerpo. Un enlace con
+`UPDATE_PASSWORD` o `CONFIGURE_TOTP` deja a quien lo abra fijar la contraseña o el segundo factor: es
+restablecer una credencial por correo, y `users-write` solo —que con `PUT` también cambia el email—
+bastaría para quedarse con una cuenta. Por eso esas acciones (`RequiredAction.touchesCredentials()`)
+piden `users-write` **y** `users-password-reset`; sin el segundo, `403 AUTH-403`, y
+`users-password-reset` solo sigue sin abrir la ruta. No es que un permiso implique otro: hacen falta
+los dos. `VERIFY_EMAIL`, `UPDATE_PROFILE` y `TERMS_AND_CONDITIONS` siguen pidiendo solo `users-write`.
+Lo comprueba el `@PreAuthorize` de `UserController.executeActionsEmail`, con el cuerpo ya validado
+(un cuerpo que no vale es un 400 antes que un 403), porque la cadena de filtros no lee cuerpos. Las
+`requiredActions` del alta no mandan ningún correo —la persona las completa al entrar con la
+contraseña que ya tiene— y siguen siendo de `users-write`.
+
 **Sin CORS propio.** Todo navegador llega por `mto-gateway`, que resuelve el CORS y quita `Origin`
 antes de llamar a este servicio. Aquí no hay `.cors()` ni `OPTIONS` abierto: un *preflight* que
 llegara directamente pide token como cualquier otra petición, y nada contesta con
@@ -218,7 +231,7 @@ que es el valor del perfil `dev`).
 | `PATCH /api/v1/users/{userId}/enabled` | `{"enabled": true\|false}` |
 | `DELETE /api/v1/users/{userId}` | `204` |
 | `POST /api/v1/users/{userId}/reset-password` | `{"password", "temporary"}` (temporal por defecto). `204` |
-| `POST /api/v1/users/{userId}/execute-actions-email` | `{"actions": [...], "lifespanSeconds"?, "clientId"?, "redirectUri"?}`. `202`. Necesita SMTP en el realm |
+| `POST /api/v1/users/{userId}/execute-actions-email` | `{"actions": [...], "lifespanSeconds"?, "clientId"?, "redirectUri"?}`. `202`. Necesita SMTP en el realm. Con `UPDATE_PASSWORD` o `CONFIGURE_TOTP` pide además `users-password-reset` (`403 AUTH-403` sin él) |
 | `GET /api/v1/users/{userId}/sessions` | Sesiones abiertas: `[{id, username, ipAddress, startedAt, lastAccessAt, clients}]` |
 | `DELETE /api/v1/users/{userId}/sessions` | Cierra todas. `204`, idempotente |
 | `DELETE /api/v1/users/{userId}/sessions/{sessionId}` | Cierra una. `204`; `404 SES-404` si esa sesión no es de ese usuario |
@@ -394,6 +407,7 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST "$BASE/$USER_ID/reset-password"
   -d '{"password":"Otra.Temporal.456","temporary":true}'
 
 # Correo con acciones requeridas (sin SMTP en el realm responde 502 KC-502)
+# Con UPDATE_PASSWORD o CONFIGURE_TOTP el token necesita users-write y users-password-reset
 curl -s -X POST "$BASE/$USER_ID/execute-actions-email" -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" -d '{"actions":["UPDATE_PASSWORD","VERIFY_EMAIL"],"lifespanSeconds":3600}'
 

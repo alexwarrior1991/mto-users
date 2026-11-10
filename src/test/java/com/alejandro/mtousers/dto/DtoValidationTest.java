@@ -52,6 +52,16 @@ class DtoValidationTest {
         assertEquals(Set.of("lifespanSeconds"), fields(new ExecuteActionsEmailRequest(List.of(RequiredAction.VERIFY_EMAIL), 0, null, null)));
     }
 
+    /** Lo que decide si el correo de acciones pide además users-password-reset. */
+    @Test
+    void onlyTheActionsThatSetACredentialTouchCredentials() {
+        assertEquals(Set.of(RequiredAction.UPDATE_PASSWORD, RequiredAction.CONFIGURE_TOTP),
+                java.util.Arrays.stream(RequiredAction.values()).filter(RequiredAction::touchesCredentials).collect(Collectors.toSet()));
+        assertFalse(new ExecuteActionsEmailRequest(List.of(RequiredAction.VERIFY_EMAIL, RequiredAction.UPDATE_PROFILE), null, null, null).touchesCredentials());
+        assertTrue(new ExecuteActionsEmailRequest(List.of(RequiredAction.VERIFY_EMAIL, RequiredAction.CONFIGURE_TOTP), null, null, null).touchesCredentials());
+        assertFalse(new ExecuteActionsEmailRequest(null, null, null, null).touchesCredentials());
+    }
+
     @Test
     void roleNamesRequestRejectsEmptyListsAndBlankNames() {
         assertEquals(Set.of("roles"), fields(new RoleNamesRequest(List.of())));
