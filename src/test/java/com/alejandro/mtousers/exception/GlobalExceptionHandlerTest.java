@@ -151,6 +151,12 @@ class GlobalExceptionHandlerTest {
         assertEquals("KC-ACCESS", codeOf(handler.handleKeycloakAccess(new KeycloakAccessException("nope", null), request)));
         assertEquals(HttpStatus.BAD_GATEWAY, handler.handleKeycloakUpstream(new KeycloakUpstreamException("boom", null), request).getStatusCode());
         assertEquals("KC-502", codeOf(handler.handleKeycloakUpstream(new KeycloakUpstreamException("boom", null), request)));
+        // Un objetivo que no se admite es un 403, pero no el de un permiso que falta.
+        assertEquals(HttpStatus.FORBIDDEN, handler.handleForbiddenTarget(ServiceAccountProtectedException.readOnly("service-account-x"), request).getStatusCode());
+        assertEquals("USR-SVC-403", codeOf(handler.handleForbiddenTarget(ServiceAccountProtectedException.readOnly("service-account-x"), request)));
+        assertEquals("USR-SVC-403", codeOf(handler.handleForbiddenTarget(ServiceAccountProtectedException.reservedUsername("service-account-"), request)));
+        assertEquals(HttpStatus.FORBIDDEN, handler.handleForbiddenTarget(new SelfAdministrationException("delete your own account"), request).getStatusCode());
+        assertEquals("USR-SELF-403", codeOf(handler.handleForbiddenTarget(new SelfAdministrationException("delete your own account"), request)));
     }
 
     @Test

@@ -113,14 +113,15 @@ public class UserController {
     }
 
     @PatchMapping("/{userId}/enabled")
-    @Operation(summary = "Enable or disable a user")
+    @Operation(summary = "Enable or disable a user",
+            description = "403 USR-SELF-403 when disabling oneself; 403 USR-SVC-403 on a service account, like every other write on a user.")
     public UserResponse setEnabled(@PathVariable @Pattern(regexp = USER_ID_PATTERN, message = USER_ID_MESSAGE) String userId,
                                    @Valid @RequestBody UserEnabledRequest request) {
         return userService.setEnabled(userId, request.enabled());
     }
 
     @DeleteMapping("/{userId}")
-    @Operation(summary = "Delete a user")
+    @Operation(summary = "Delete a user", description = "403 USR-SELF-403 on oneself; 403 USR-SVC-403 on a service account.")
     @ApiResponse(responseCode = "204", description = "Deleted")
     public ResponseEntity<Void> delete(@PathVariable @Pattern(regexp = USER_ID_PATTERN, message = USER_ID_MESSAGE) String userId) {
         userService.delete(userId);

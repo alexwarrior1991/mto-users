@@ -98,6 +98,19 @@ Packages under `com.alejandro.mtousers`:
   `users-write` can also change the email. Neither permission alone is enough; this is the only
   route whose permission depends on the body. `requiredActions` on create send no mail and stay
   with `users-write`.
+- **Service accounts are read-only, and nobody changes their own permissions or takes themselves
+  out.** `TargetUserPolicy` (in `service/impl`) decides it before any write to Keycloak:
+  `requireAdministrable(userId)` is the first Keycloak call of **every** mutation of the three
+  services (403 `USR-SVC-403` for a `service-account-*` user, closing its sessions included), and
+  `requireNotSelf` refuses, when the target is the caller's `sub`, adding/removing client roles,
+  assigning/removing profiles, disabling and deleting (403 `USR-SELF-403`); updating one's data,
+  password, actions email, sessions, credentials and re-enabling stay allowed. A service account is
+  recognised by its **username prefix** (`ServiceAccounts`): the Admin API does not return
+  `serviceAccountClientId` when reading users (only the realm export carries it), so the prefix is
+  reserved and `create` refuses it. A refusal writes no audit line and publishes no event.
+  `UserResponse.serviceAccount` tells the web apps. A new mutation goes into
+  `BusinessLayerTest.mutationsOf`, which the guard test compares with the `AdminAction`s and the
+  methods of the three interfaces.
 - **Every `UsersException` subclass is named in an `@ExceptionHandler` list** of
   `GlobalExceptionHandler`; the `UsersException` handler is a 422 safety net, not a route.
   `GlobalExceptionHandlerTest` scans the package and fails if one is missing — calling a handler

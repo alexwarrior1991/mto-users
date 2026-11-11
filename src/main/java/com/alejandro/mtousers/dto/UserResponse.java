@@ -15,6 +15,11 @@ public record UserResponse(
         Boolean enabled,
         Instant createdAt,
         Map<String, List<String>> attributes,
-        List<String> requiredActions
+        List<String> requiredActions,
+        /**
+         * La cuenta de servicio de un cliente ({@code service-account-<clientId>}): se lee, pero
+         * toda acción sobre ella responde {@code 403 USR-SVC-403}. Para que una pantalla no las ofrezca.
+         */
+        boolean serviceAccount
 ) {
 }

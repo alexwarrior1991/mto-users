@@ -69,7 +69,7 @@ public class ProfileController {
     }
 
     @PutMapping("/{userId}/profiles/{profileName}")
-    @Operation(summary = "Assign a profile to a user", description = "Idempotent. Returns the profiles of the user.")
+    @Operation(summary = "Assign a profile to a user", description = "Idempotent. Returns the profiles of the user. 403 USR-SELF-403 on oneself; 403 USR-SVC-403 on a service account.")
     public List<ProfileSummaryResponse> assignProfile(
             @PathVariable @Pattern(regexp = UserController.USER_ID_PATTERN, message = UserController.USER_ID_MESSAGE) String userId,
             @PathVariable @Pattern(regexp = PROFILE_NAME_PATTERN, message = PROFILE_NAME_MESSAGE) String profileName) {
@@ -77,7 +77,7 @@ public class ProfileController {
     }
 
     @DeleteMapping("/{userId}/profiles/{profileName}")
-    @Operation(summary = "Remove a profile from a user", description = "Removes exactly what the profile granted. Returns the profiles of the user.")
+    @Operation(summary = "Remove a profile from a user", description = "Removes exactly what the profile granted. Returns the profiles of the user. 403 USR-SELF-403 on oneself; 403 USR-SVC-403 on a service account.")
     public List<ProfileSummaryResponse> removeProfile(
             @PathVariable @Pattern(regexp = UserController.USER_ID_PATTERN, message = UserController.USER_ID_MESSAGE) String userId,
             @PathVariable @Pattern(regexp = PROFILE_NAME_PATTERN, message = PROFILE_NAME_MESSAGE) String profileName) {

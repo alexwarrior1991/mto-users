@@ -77,6 +77,16 @@ public class GlobalExceptionHandler {
         return business(exception, HttpStatus.BAD_REQUEST, request);
     }
 
+    /**
+     * El permiso está, lo que no se admite es el objetivo: una cuenta de servicio, o uno mismo. Un
+     * 403 con su código, para que un cliente no lo confunda con el {@code AUTH-403} de un permiso
+     * que falta.
+     */
+    @ExceptionHandler({ServiceAccountProtectedException.class, SelfAdministrationException.class})
+    public ResponseEntity<ProblemDetail> handleForbiddenTarget(UsersException exception, HttpServletRequest request) {
+        return business(exception, HttpStatus.FORBIDDEN, request);
+    }
+
     /** La cuenta de servicio no vale o le faltan permisos: se registra como error, no como aviso. */
     @ExceptionHandler(KeycloakAccessException.class)
     public ResponseEntity<ProblemDetail> handleKeycloakAccess(KeycloakAccessException exception, HttpServletRequest request) {
