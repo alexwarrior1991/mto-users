@@ -96,7 +96,7 @@ class ApiAuthorizationRulesTest {
     void stubCreate() {
         // El alta construye la cabecera Location con el id de la respuesta: el doble tiene que devolver algo.
         when(userService.create(any())).thenReturn(new UserResponse("new-id", "ana.nueva", null, null, "ana@mto.local",
-                false, true, Instant.EPOCH, Map.of(), List.of()));
+                false, true, Instant.EPOCH, Map.of(), List.of(), false));
     }
 
     @Test

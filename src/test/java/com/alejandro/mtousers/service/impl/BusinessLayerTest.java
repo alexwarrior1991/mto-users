@@ -27,8 +27,11 @@ import com.alejandro.mtousers.exception.KeycloakUnavailableException;
 import com.alejandro.mtousers.exception.ProfileNotFoundException;
 import com.alejandro.mtousers.exception.ProtectedClientException;
 import com.alejandro.mtousers.exception.RoleNotFoundException;
+import com.alejandro.mtousers.exception.SelfAdministrationException;
+import com.alejandro.mtousers.exception.ServiceAccountProtectedException;
 import com.alejandro.mtousers.exception.SessionNotFoundException;
 import com.alejandro.mtousers.keycloak.KeycloakAdminGateway;
+import com.alejandro.mtousers.keycloak.ServiceAccounts;
 import com.alejandro.mtousers.mapper.ProfileMapper;
 import com.alejandro.mtousers.mapper.RoleMapper;
 import com.alejandro.mtousers.mapper.UserMapper;
@@ -36,6 +39,9 @@ import com.alejandro.mtousers.messaging.SensitiveKeys;
 import com.alejandro.mtousers.messaging.UsersEventPublisher;
 import com.alejandro.mtousers.service.AdminAuditLog;
 import com.alejandro.mtousers.service.AdminAuditLog.AdminAction;
+import com.alejandro.mtousers.service.ProfileService;
+import com.alejandro.mtousers.service.RoleService;
+import com.alejandro.mtousers.service.UserService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -49,13 +55,24 @@ import org.keycloak.representations.idm.UserSessionRepresentation;
 import org.mapstruct.factory.Mappers;
 import org.mockito.ArgumentCaptor;
 import org.slf4j.LoggerFactory;
+import org.springframework.security.core.authority.AuthorityUtils;
+import org.springframework.security.core.context.SecurityContext;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 
+import java.lang.reflect.Method;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -70,8 +87,11 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -83,18 +103,21 @@ import static org.mockito.Mockito.when;
 class BusinessLayerTest {
 
     private static final String USER_ID = "2f1c9d1e-0000-4000-8000-000000000001";
+    private static final String ACTOR_ID = "7a000000-0000-4000-8000-0000000000aa";
+    private static final String SERVICE_ACCOUNT_ID = "5e000000-0000-4000-8000-0000000000cc";
 
     private final KeycloakAdminGateway keycloak = mock(KeycloakAdminGateway.class);
     private final RecordingPublisher events = new RecordingPublisher();
     private final AdminAuditLog audit = new AdminAuditLog(new CurrentUserService(), events);
+    private final TargetUserPolicy policy = new TargetUserPolicy(keycloak, new CurrentUserService());
     private final ListAppender<ILoggingEvent> auditLines = new ListAppender<>();
 
-    private final UserServiceImpl userService = new UserServiceImpl(keycloak, Mappers.getMapper(UserMapper.class), audit);
+    private final UserServiceImpl userService = new UserServiceImpl(keycloak, Mappers.getMapper(UserMapper.class), audit, policy);
     private final RoleServiceImpl roleService = new RoleServiceImpl(keycloak, keycloakProperties(),
-            Mappers.getMapper(RoleMapper.class), Mappers.getMapper(UserMapper.class), audit);
+            Mappers.getMapper(RoleMapper.class), Mappers.getMapper(UserMapper.class), audit, policy);
     private final ProfileServiceImpl profileService = new ProfileServiceImpl(keycloak,
             new ProfileProperties("mto-", List.of("mto-internal")), Mappers.getMapper(ProfileMapper.class),
-            Mappers.getMapper(UserMapper.class), audit);
+            Mappers.getMapper(UserMapper.class), audit, policy);
 
     @BeforeEach
     void captureAuditLog() {
@@ -105,6 +128,7 @@ class BusinessLayerTest {
     @AfterEach
     void releaseAuditLog() {
         ((Logger) LoggerFactory.getLogger("com.alejandro.mtousers.audit")).detachAppender(auditLines);
+        SecurityContextHolder.clearContext();
     }
 
     // --- Usuarios ---------------------------------------------------------------------------------
@@ -686,6 +710,224 @@ class BusinessLayerTest {
 
         assertThrows(ProfileNotFoundException.class, () -> profileService.listProfileMembers("default-roles-mto", 0, 20));
         verify(keycloak, never()).listRealmRoleMembers(org.mockito.ArgumentMatchers.eq("default-roles-mto"), org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyInt());
+    }
+
+    // --- Sobre quién no se actúa: cuentas de servicio y uno mismo ------------------------------------
+
+    /**
+     * Una cuenta de servicio se lee como cualquier usuario, pero nada la cambia: deshabilitar o
+     * quitarle roles a la de este servicio lo deja sin Keycloak, y a la de un hermano lo rompe en
+     * silencio. El rechazo llega antes de escribir nada, sin línea de auditoría y sin evento.
+     */
+    @Test
+    void everyMutationOfAServiceAccountIsRefusedBeforeAnythingIsWritten() {
+        authenticateAs(ACTOR_ID, "usuarios.responsable");
+
+        for (Mutation mutation : mutationsOf(SERVICE_ACCOUNT_ID)) {
+            reset(keycloak);
+            when(keycloak.findUser(SERVICE_ACCOUNT_ID)).thenReturn(serviceAccount("service-account-mto-maintenance-svc"));
+
+            ServiceAccountProtectedException refused = assertThrows(ServiceAccountProtectedException.class,
+                    mutation.call()::run, mutation.method());
+
+            assertEquals("USR-SVC-403", refused.getErrorCode());
+            assertTrue(refused.getMessage().contains("service-account-mto-maintenance-svc"), refused.getMessage());
+            verify(keycloak).findUser(SERVICE_ACCOUNT_ID);
+            verifyNoMoreInteractions(keycloak);
+        }
+        assertEquals(0, auditLines.list.size(), "Lo que se rechaza no se audita como hecho");
+        assertEquals(0, events.published.size(), "Ni se publica");
+    }
+
+    /** Leerla sí: sus datos, sus roles, sus perfiles y sus sesiones, con la marca que la distingue. */
+    @Test
+    void aServiceAccountIsStillReadAndSaysWhatItIs() {
+        when(keycloak.findUser(SERVICE_ACCOUNT_ID)).thenReturn(serviceAccount("service-account-mto-users-svc"));
+        when(keycloak.getUserRoleMappings(SERVICE_ACCOUNT_ID)).thenReturn(new MappingsRepresentation());
+        when(keycloak.getUserRealmRoles(SERVICE_ACCOUNT_ID)).thenReturn(List.of(role("p1", "mto-users-viewer")));
+        when(keycloak.listUserSessions(SERVICE_ACCOUNT_ID)).thenReturn(List.of());
+        when(keycloak.listCredentials(SERVICE_ACCOUNT_ID)).thenReturn(List.of());
+        when(keycloak.findUser(USER_ID)).thenReturn(user("ana.uno"));
+
+        assertTrue(userService.get(SERVICE_ACCOUNT_ID).serviceAccount());
+        assertFalse(userService.get(USER_ID).serviceAccount());
+        assertNotNull(roleService.getUserRoles(SERVICE_ACCOUNT_ID));
+        assertEquals(1, profileService.getUserProfiles(SERVICE_ACCOUNT_ID).size());
+        assertEquals(List.of(), userService.listSessions(SERVICE_ACCOUNT_ID));
+        assertEquals(List.of(), userService.listCredentials(SERVICE_ACCOUNT_ID));
+
+        // La Admin API no devuelve serviceAccountClientId al leer un usuario: decide el nombre. Si
+        // algun dia lo trae, tambien vale por si solo.
+        UserRepresentation flagged = user("renombrada");
+        flagged.setServiceAccountClientId("mto-stock-svc");
+        assertTrue(ServiceAccounts.isServiceAccount(flagged));
+        assertTrue(ServiceAccounts.isServiceAccount(user("Service-Account-mto-field-svc")));
+        assertFalse(ServiceAccounts.isServiceAccount(user("servicio.cuentas")));
+        assertFalse(ServiceAccounts.isServiceAccount(new UserRepresentation()));
+    }
+
+    /** El prefijo es lo que distingue a una cuenta de servicio, así que un alta no puede usarlo. */
+    @Test
+    void aNewUserCannotTakeTheNameOfAServiceAccount() {
+        ServiceAccountProtectedException refused = assertThrows(ServiceAccountProtectedException.class,
+                () -> userService.create(new CreateUserRequest("Service-Account-falsa", null, null, null, null, null, null, null, null)));
+
+        assertEquals("USR-SVC-403", refused.getErrorCode());
+        verifyNoInteractions(keycloak);
+        assertEquals(0, auditLines.list.size());
+        assertEquals(0, events.published.size());
+    }
+
+    /**
+     * Con users-roles-write o users-profiles-write alguien podría darse cualquier permiso; y quien se
+     * deshabilita o se borra se queda fuera sin que nadie lo haya decidido. Eso lo hace otra persona.
+     * Se rechaza con el sub del token, sin preguntar siquiera a Keycloak.
+     */
+    @Test
+    void nobodyChangesTheirOwnPermissionsNorTakesThemselvesOut() {
+        authenticateAs(USER_ID, "ana.uno");
+        Set<String> refusedOnOneself = Set.of("addClientRoles", "removeClientRoles", "assignProfile", "removeProfile",
+                "setEnabled(false)", "delete");
+
+        for (Mutation mutation : mutationsOf(USER_ID)) {
+            if (!refusedOnOneself.contains(mutation.method())) {
+                continue;
+            }
+            SelfAdministrationException refused = assertThrows(SelfAdministrationException.class,
+                    mutation.call()::run, mutation.method());
+            assertEquals("USR-SELF-403", refused.getErrorCode());
+        }
+
+        verifyNoInteractions(keycloak);
+        assertEquals(0, auditLines.list.size());
+        assertEquals(0, events.published.size());
+    }
+
+    /**
+     * Lo demás sobre uno mismo sí: sus datos, su contraseña, sus sesiones, sus credenciales, y volver
+     * a habilitarse. Y todo, sobre otra persona: la regla mira el objetivo, no quita ningún permiso.
+     */
+    @Test
+    void theRestIsAllowedOnOneselfAndEverythingOnSomebodyElse() {
+        Set<String> refusedOnOneself = Set.of("addClientRoles", "removeClientRoles", "assignProfile", "removeProfile",
+                "setEnabled(false)", "delete");
+
+        authenticateAs(USER_ID, "ana.uno");
+        List<AdminAction> onOneself = new ArrayList<>();
+        for (Mutation mutation : mutationsOf(USER_ID)) {
+            if (refusedOnOneself.contains(mutation.method())) {
+                continue;
+            }
+            stubAnAdministrableUser();
+            mutation.call().run();
+            onOneself.add(mutation.action());
+        }
+        assertEquals(onOneself, events.published.stream().map(Published::action).toList());
+        assertEquals(9, onOneself.size());
+
+        events.published.clear();
+        authenticateAs(ACTOR_ID, "usuarios.responsable");
+        for (Mutation mutation : mutationsOf(USER_ID)) {
+            stubAnAdministrableUser();
+            mutation.call().run();
+        }
+        assertEquals(mutationsOf(USER_ID).stream().map(Mutation::action).toList(),
+                events.published.stream().map(Published::action).toList());
+    }
+
+    /**
+     * El guardián: toda acción que deja rastro, salvo el alta (que no tiene objetivo), y todo método
+     * de los tres servicios que no sea de lectura están en {@link #mutationsOf(String)}, que es lo
+     * que los tests de arriba recorren. Una mutación nueva que no se añada ahí falla aquí; añadida
+     * sin pasar por {@code TargetUserPolicy}, falla en el de las cuentas de servicio.
+     */
+    @Test
+    void everyMutationOfTheThreeServicesIsCoveredByTheTargetPolicyTests() {
+        List<Mutation> mutations = mutationsOf(USER_ID);
+
+        Set<AdminAction> expectedActions = EnumSet.allOf(AdminAction.class);
+        expectedActions.remove(AdminAction.USER_CREATED);
+        assertEquals(expectedActions, mutations.stream().map(Mutation::action).collect(Collectors.toSet()));
+        assertEquals(expectedActions.size(), mutations.size(), "Una entrada por accion");
+
+        Set<String> writingMethods = Stream.of(UserService.class, RoleService.class, ProfileService.class)
+                .flatMap(service -> Arrays.stream(service.getDeclaredMethods()))
+                .map(Method::getName)
+                .filter(name -> !name.startsWith("get") && !name.startsWith("list") && !name.startsWith("search"))
+                .filter(name -> !name.equals("create"))
+                .collect(Collectors.toCollection(TreeSet::new));
+        Set<String> covered = mutations.stream()
+                .map(mutation -> mutation.method().replaceAll("\\(.*", ""))
+                .collect(Collectors.toCollection(TreeSet::new));
+        assertEquals(writingMethods, covered);
+    }
+
+    /** Cada mutación de los tres servicios sobre ese usuario, con la acción que deja en el rastro. */
+    private List<Mutation> mutationsOf(String userId) {
+        RoleNamesRequest roles = new RoleNamesRequest(List.of("stock-read"));
+        return List.of(
+                new Mutation("update", AdminAction.USER_UPDATED,
+                        () -> userService.update(userId, new UpdateUserRequest("Ana", null, null, null, null))),
+                new Mutation("setEnabled(true)", AdminAction.USER_ENABLED, () -> userService.setEnabled(userId, true)),
+                new Mutation("setEnabled(false)", AdminAction.USER_DISABLED, () -> userService.setEnabled(userId, false)),
+                new Mutation("delete", AdminAction.USER_DELETED, () -> userService.delete(userId)),
+                new Mutation("resetPassword", AdminAction.PASSWORD_RESET,
+                        () -> userService.resetPassword(userId, new ResetPasswordRequest("Secreta.123", null))),
+                new Mutation("executeActionsEmail", AdminAction.ACTIONS_EMAIL_SENT,
+                        () -> userService.executeActionsEmail(userId,
+                                new ExecuteActionsEmailRequest(List.of(RequiredAction.VERIFY_EMAIL), null, null, null))),
+                new Mutation("addClientRoles", AdminAction.CLIENT_ROLES_ADDED,
+                        () -> roleService.addClientRoles(userId, "mto-stock-api", roles)),
+                new Mutation("removeClientRoles", AdminAction.CLIENT_ROLES_REMOVED,
+                        () -> roleService.removeClientRoles(userId, "mto-stock-api", roles)),
+                new Mutation("assignProfile", AdminAction.PROFILE_ASSIGNED,
+                        () -> profileService.assignProfile(userId, "mto-users-viewer")),
+                new Mutation("removeProfile", AdminAction.PROFILE_REMOVED,
+                        () -> profileService.removeProfile(userId, "mto-users-viewer")),
+                new Mutation("revokeSession", AdminAction.SESSION_REVOKED, () -> userService.revokeSession(userId, "session-1")),
+                new Mutation("revokeAllSessions", AdminAction.ALL_SESSIONS_REVOKED, () -> userService.revokeAllSessions(userId)),
+                new Mutation("revokeOfflineSession", AdminAction.OFFLINE_SESSION_REVOKED,
+                        () -> userService.revokeOfflineSession(userId, "offline-1")),
+                new Mutation("revokeAllOfflineSessions", AdminAction.ALL_OFFLINE_SESSIONS_REVOKED,
+                        () -> userService.revokeAllOfflineSessions(userId)),
+                new Mutation("deleteCredential", AdminAction.CREDENTIAL_DELETED,
+                        () -> userService.deleteCredential(userId, "cred-1")));
+    }
+
+    /** Lo que Keycloak tiene que contestar para que cualquiera de las mutaciones salga bien. */
+    private void stubAnAdministrableUser() {
+        reset(keycloak);
+        when(keycloak.findUser(USER_ID)).thenReturn(user("ana.uno"));
+        when(keycloak.findClient("mto-stock-api")).thenReturn(client("uuid-stock", "mto-stock-api"));
+        when(keycloak.listClientRoles("uuid-stock")).thenReturn(List.of(role("r1", "stock-read")));
+        when(keycloak.getUserRoleMappings(USER_ID)).thenReturn(new MappingsRepresentation());
+        when(keycloak.findRealmRole("mto-users-viewer")).thenReturn(role("p1", "mto-users-viewer"));
+        when(keycloak.listUserSessions(USER_ID)).thenReturn(List.of(session("session-1", "10.0.0.9", Map.of())));
+        when(keycloak.findClientsWithOfflineTokens(USER_ID)).thenReturn(List.of("uuid-frontend"));
+        when(keycloak.listOfflineSessions(USER_ID, "uuid-frontend")).thenReturn(List.of(session("offline-1", "10.0.0.9", Map.of())));
+        when(keycloak.listCredentials(USER_ID)).thenReturn(List.of(credential("cred-1", "otp", "movil", 1L)));
+    }
+
+    private record Mutation(String method, AdminAction action, Runnable call) {
+    }
+
+    private static void authenticateAs(String userId, String username) {
+        Jwt jwt = Jwt.withTokenValue("token")
+                .header("alg", "RS256")
+                .subject(userId)
+                .claim("preferred_username", username)
+                .build();
+        SecurityContext context = SecurityContextHolder.createEmptyContext();
+        context.setAuthentication(new JwtAuthenticationToken(jwt, AuthorityUtils.NO_AUTHORITIES, username));
+        SecurityContextHolder.setContext(context);
+    }
+
+    private static UserRepresentation serviceAccount(String username) {
+        UserRepresentation account = new UserRepresentation();
+        account.setId(SERVICE_ACCOUNT_ID);
+        account.setUsername(username);
+        account.setEnabled(true);
+        return account;
     }
 
     // --- helpers ----------------------------------------------------------------------------------

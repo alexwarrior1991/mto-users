@@ -59,6 +59,13 @@ class MapperLayerTest {
         assertEquals(Instant.ofEpochMilli(1_700_000_000_000L), response.createdAt());
         assertEquals(List.of("ops"), response.attributes().get("dept"));
         assertEquals(List.of("UPDATE_PASSWORD"), response.requiredActions());
+        assertFalse(response.serviceAccount());
+
+        // Una cuenta de servicio se reconoce por su nombre: la Admin API no devuelve
+        // serviceAccountClientId al leer un usuario, solo lo lleva la exportacion del realm.
+        UserRepresentation serviceAccount = new UserRepresentation();
+        serviceAccount.setUsername("service-account-mto-users-svc");
+        assertTrue(userMapper.toResponse(serviceAccount).serviceAccount());
         assertTrue(response.toString().contains("ana.uno"));
         assertTrue(!response.toString().contains("Secreta.123"), "La respuesta no tiene por dónde llevar una credencial");
     }

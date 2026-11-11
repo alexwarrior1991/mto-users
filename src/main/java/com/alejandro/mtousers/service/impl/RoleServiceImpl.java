@@ -37,9 +37,11 @@ class RoleServiceImpl implements RoleService {
     private final RoleMapper roleMapper;
     private final UserMapper userMapper;
     private final AdminAuditLog audit;
+    private final TargetUserPolicy policy;
 
     RoleServiceImpl(KeycloakAdminGateway keycloak, KeycloakAdminProperties properties, RoleMapper roleMapper,
-                    UserMapper userMapper, AdminAuditLog audit) {
+                    UserMapper userMapper, AdminAuditLog audit, TargetUserPolicy policy) {
+        this.policy = policy;
         this.keycloak = keycloak;
         this.properties = properties;
         this.roleMapper = roleMapper;
@@ -73,6 +75,8 @@ class RoleServiceImpl implements RoleService {
 
     @Override
     public UserRolesResponse addClientRoles(String userId, String clientId, RoleNamesRequest request) {
+        policy.requireNotSelf(userId, "change your own roles");
+        policy.requireAdministrable(userId);
         ClientRepresentation client = resolveClient(clientId);
         List<RoleRepresentation> roles = resolveRoles(client, request.roles());
         keycloak.addClientRoles(userId, client.getId(), roles);
@@ -83,6 +87,8 @@ class RoleServiceImpl implements RoleService {
 
     @Override
     public UserRolesResponse removeClientRoles(String userId, String clientId, RoleNamesRequest request) {
+        policy.requireNotSelf(userId, "change your own roles");
+        policy.requireAdministrable(userId);
         ClientRepresentation client = resolveClient(clientId);
         List<RoleRepresentation> roles = resolveRoles(client, request.roles());
         keycloak.removeClientRoles(userId, client.getId(), roles);

@@ -21,6 +21,7 @@ import com.alejandro.mtousers.exception.KeycloakUpstreamException;
 import com.alejandro.mtousers.exception.ProfileNotFoundException;
 import com.alejandro.mtousers.exception.ProtectedClientException;
 import com.alejandro.mtousers.exception.RoleNotFoundException;
+import com.alejandro.mtousers.exception.ServiceAccountProtectedException;
 import com.alejandro.mtousers.exception.SessionNotFoundException;
 import com.alejandro.mtousers.exception.UserAlreadyExistsException;
 import com.alejandro.mtousers.exception.UserNotFoundException;
@@ -198,6 +199,44 @@ class KeycloakUsersIT {
         assertThrows(RoleNotFoundException.class,
                 () -> roleService.addClientRoles(existing, "mto-stock-api", new RoleNamesRequest(List.of("stock-fly"))));
         assertThrows(UserNotFoundException.class, () -> userService.get(UUID.randomUUID().toString()));
+    }
+
+    /**
+     * La cuenta de servicio de verdad: Keycloak la devuelve como un usuario más y <b>sin</b>
+     * {@code serviceAccountClientId} (solo lo lleva la exportación), así que es el nombre lo que la
+     * delata. Se lee, y nada la cambia: sigue habilitada y con sus roles, que es lo que mantiene en
+     * pie a este mismo servicio.
+     */
+    @Test
+    void theServiceAccountOfThisVeryServiceIsReadButNeverChanged() {
+        UserResponse account = userService.search(
+                new UserSearchCriteria(null, "service-account-mto-users-svc", null, null, null, List.of(), 0, 1)).content().getFirst();
+        assertTrue(account.serviceAccount());
+        assertTrue(userService.get(account.id()).serviceAccount());
+        assertNotNull(roleService.getUserRoles(account.id()));
+        assertNotNull(profileService.getUserProfiles(account.id()));
+        assertNotNull(userService.listSessions(account.id()));
+
+        assertThrows(ServiceAccountProtectedException.class, () -> userService.setEnabled(account.id(), false));
+        assertThrows(ServiceAccountProtectedException.class, () -> userService.delete(account.id()));
+        assertThrows(ServiceAccountProtectedException.class,
+                () -> userService.update(account.id(), new UpdateUserRequest("Otra", null, null, null, null)));
+        assertThrows(ServiceAccountProtectedException.class,
+                () -> userService.resetPassword(account.id(), new ResetPasswordRequest("Secreta.1234", false)));
+        assertThrows(ServiceAccountProtectedException.class,
+                () -> roleService.addClientRoles(account.id(), "mto-stock-api", new RoleNamesRequest(List.of("stock-write"))));
+        assertThrows(ServiceAccountProtectedException.class, () -> profileService.assignProfile(account.id(), "mto-users-viewer"));
+        assertThrows(ServiceAccountProtectedException.class, () -> userService.revokeAllSessions(account.id()));
+        assertThrows(ServiceAccountProtectedException.class,
+                () -> userService.create(new CreateUserRequest("service-account-falsa", null, null, null, null, null, null, null, null)));
+
+        // Sigue como estaba, y este servicio sigue pudiendo hablar con Keycloak.
+        assertEquals(Boolean.TRUE, userService.get(account.id()).enabled());
+        assertFalse(roleService.getUserRoles(account.id()).realmRoles().contains("mto-users-viewer"));
+
+        // Los demás no llevan la marca.
+        assertFalse(userService.search(new UserSearchCriteria(null, "existente", null, null, null, List.of(), 0, 1))
+                .content().getFirst().serviceAccount());
     }
 
     /** Sin SMTP en el realm Keycloak responde 500: tiene que llegar como 502, no como 500 propio. */

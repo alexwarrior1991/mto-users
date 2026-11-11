@@ -39,9 +39,11 @@ class ProfileServiceImpl implements ProfileService {
     private final ProfileMapper profileMapper;
     private final UserMapper userMapper;
     private final AdminAuditLog audit;
+    private final TargetUserPolicy policy;
 
     ProfileServiceImpl(KeycloakAdminGateway keycloak, ProfileProperties properties, ProfileMapper profileMapper,
-                       UserMapper userMapper, AdminAuditLog audit) {
+                       UserMapper userMapper, AdminAuditLog audit, TargetUserPolicy policy) {
+        this.policy = policy;
         this.keycloak = keycloak;
         this.properties = properties;
         this.profileMapper = profileMapper;
@@ -90,6 +92,8 @@ class ProfileServiceImpl implements ProfileService {
 
     @Override
     public List<ProfileSummaryResponse> assignProfile(String userId, String profileName) {
+        policy.requireNotSelf(userId, "change your own profiles");
+        policy.requireAdministrable(userId);
         RoleRepresentation role = resolveProfile(profileName);
         keycloak.addRealmRoles(userId, List.of(role));
         audit.record(AdminAction.PROFILE_ASSIGNED, userId, UserServiceImpl.detail("profile", profileName));
@@ -98,6 +102,8 @@ class ProfileServiceImpl implements ProfileService {
 
     @Override
     public List<ProfileSummaryResponse> removeProfile(String userId, String profileName) {
+        policy.requireNotSelf(userId, "change your own profiles");
+        policy.requireAdministrable(userId);
         RoleRepresentation role = resolveProfile(profileName);
         keycloak.removeRealmRoles(userId, List.of(role));
         audit.record(AdminAction.PROFILE_REMOVED, userId, UserServiceImpl.detail("profile", profileName));

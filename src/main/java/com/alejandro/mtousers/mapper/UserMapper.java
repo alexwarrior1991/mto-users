@@ -5,6 +5,7 @@ import com.alejandro.mtousers.dto.UpdateUserRequest;
 import com.alejandro.mtousers.dto.UserCredentialResponse;
 import com.alejandro.mtousers.dto.UserResponse;
 import com.alejandro.mtousers.dto.UserSessionResponse;
+import com.alejandro.mtousers.keycloak.ServiceAccounts;
 import org.keycloak.representations.idm.CredentialRepresentation;
 import org.keycloak.representations.idm.UserRepresentation;
 import org.keycloak.representations.idm.UserSessionRepresentation;
@@ -22,10 +23,11 @@ import java.util.Objects;
  * Entre la representación de usuario de Keycloak y los DTOs de la API. Es el único sitio, junto
  * con {@code keycloak/}, que ve {@link UserRepresentation}.
  */
-@Mapper(config = MapStructCentralConfig.class)
+@Mapper(config = MapStructCentralConfig.class, imports = ServiceAccounts.class)
 public interface UserMapper {
 
     @Mapping(target = "createdAt", source = "createdTimestamp")
+    @Mapping(target = "serviceAccount", expression = "java(ServiceAccounts.isServiceAccount(representation))")
     UserResponse toResponse(UserRepresentation representation);
 
     List<UserResponse> toResponses(List<UserRepresentation> representations);

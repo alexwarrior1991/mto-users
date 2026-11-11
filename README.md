@@ -95,6 +95,8 @@ con `errorCode` (estable), `correlationId`, `timestamp` y, en los 400 de validac
 | Keycloak rechaza la petición (política de contraseñas, atributo obligatorio...) | 400 | `KC-400` |
 | Roles de un cliente protegido | 400 | `ROL-PROTECTED-CLIENT` |
 | Sin token / sin permiso | 401 / 403 | `AUTH-401` / `AUTH-403` |
+| El objetivo es una cuenta de servicio (`service-account-*`), o un alta con ese prefijo | 403 | `USR-SVC-403` |
+| Cambiarse a uno mismo los roles o los perfiles, deshabilitarse o borrarse | 403 | `USR-SELF-403` |
 | Usuario, cliente, rol o perfil inexistente | 404 | `USR-404`, `CLI-404`, `ROL-404`, `PRF-404` |
 | Sesión inexistente, ya cerrada o de otro usuario | 404 | `SES-404` |
 | Credencial inexistente o de otro usuario | 404 | `CRED-404` |
@@ -207,6 +209,68 @@ Lo comprueba el `@PreAuthorize` de `UserController.executeActionsEmail`, con el 
 `requiredActions` del alta no mandan ningún correo —la persona las completa al entrar con la
 contraseña que ya tiene— y siguen siendo de `users-write`.
 
+### Sobre quién no se actúa: cuentas de servicio y uno mismo
+
+Tener el permiso no basta: hay dos objetivos que la API no admite, y lo decide la capa de servicio
+(`TargetUserPolicy`) antes de escribir nada en Keycloak. Un rechazo es un `403` con código propio,
+distinto de `AUTH-403` porque a quien llama no le falta ningún permiso; no deja línea de auditoría
+ni evento, solo el aviso del log.
+
+**Las cuentas de servicio solo se leen** (`403 USR-SVC-403`). Keycloak guarda la cuenta de servicio
+de cada cliente como un usuario más, `service-account-<clientId>`, y `manage-users` deja hacerle lo
+que a cualquiera. Deshabilitar o quitarle roles a `service-account-mto-users-svc` deja a este mismo
+servicio sin acceso a Keycloak; hacérselo a la de `mto-maintenance-svc`, `mto-field-svc`,
+`mto-notification-svc`, `mto-resources-svc` o `mto-telematics-svc` rompe a ese servicio en silencio.
+Así que se listan y se leen (datos, roles, perfiles, sesiones, credenciales), y **toda** escritura
+sobre una se rechaza, también cerrar sus sesiones: una regla sin excepciones es más fácil de
+mantener, y sus tokens `client_credentials` no dependen de una sesión que haga falta cerrar desde
+aquí. Sus roles se administran con el realm (`keycloak/` y `apply-partials.sh`).
+
+Se reconoce por el nombre: la Admin API **no devuelve** `serviceAccountClientId` al leer o buscar
+un usuario (comprobado contra Keycloak 26.1; solo sale en la exportación del realm), así que decide
+el prefijo `service-account-`, sin distinguir mayúsculas; el campo se mira también por si una
+versión posterior lo trae (`ServiceAccounts`). Para que el nombre sea fiable, el prefijo queda
+reservado: un alta con él se rechaza con el mismo código, y esta API nunca cambia un `username`.
+La respuesta de usuario lleva `serviceAccount: true|false` para que una pantalla lo sepa sin
+adivinarlo.
+
+**Nadie cambia sus propios permisos ni se saca a sí mismo** (`403 USR-SELF-403`). Con
+`users-roles-write` o `users-profiles-write` una persona podría darse cualquier rol de cliente o
+cualquier perfil del dominio. Cuando el `{userId}` es el `sub` del token se rechazan: añadir y
+quitar roles, asignar y quitar perfiles, deshabilitar (`enabled=false`) y borrar. Lo hace otra
+persona. Sobre uno mismo sí se puede lo que no toca permisos ni deja a nadie fuera por accidente:
+modificar los datos básicos, fijarse una contraseña y mandarse el correo de acciones (con sus
+permisos), cerrar las propias sesiones, quitar una credencial propia y volver a habilitarse.
+
+| Acción | Sobre una cuenta de servicio | Sobre uno mismo |
+|---|---|---|
+| `GET` de cualquier cosa | sí | sí |
+| `PUT /{id}` | `USR-SVC-403` | sí |
+| `PATCH /{id}/enabled` con `false` | `USR-SVC-403` | `USR-SELF-403` |
+| `PATCH /{id}/enabled` con `true` | `USR-SVC-403` | sí |
+| `DELETE /{id}` | `USR-SVC-403` | `USR-SELF-403` |
+| `POST /{id}/reset-password` | `USR-SVC-403` | sí |
+| `POST /{id}/execute-actions-email` | `USR-SVC-403` | sí |
+| `PUT`/`DELETE /{id}/roles/clients/{clientId}` | `USR-SVC-403` | `USR-SELF-403` |
+| `PUT`/`DELETE /{id}/profiles/{profileName}` | `USR-SVC-403` | `USR-SELF-403` |
+| `DELETE /{id}/sessions`, `/{id}/sessions/{sessionId}` | `USR-SVC-403` | sí |
+| `DELETE /{id}/offline-sessions`, `/{id}/offline-sessions/{sessionId}` | `USR-SVC-403` | sí |
+| `DELETE /{id}/credentials/{credentialId}` | `USR-SVC-403` | sí |
+| `POST /api/v1/users` con `username` `service-account-*` | `USR-SVC-403` | — |
+
+Los permisos van primero: sin el rol de la ruta la respuesta sigue siendo `AUTH-403`. Un usuario que
+no existe es su `USR-404`. `BusinessLayerTest` recorre las dieciséis acciones y los métodos de los
+tres servicios, y falla si una mutación nueva no pasa por la regla.
+
+**Para los clientes web** (`mto-frontend`, `mto-backoffice`): con `serviceAccount: true` en la fila
+o en la ficha, no ofrecer modificar, activar o desactivar, borrar, contraseña, correo de acciones,
+«sacar a la persona», asignar o quitar roles y perfiles, cerrar sesiones ni quitar credenciales
+(todo sería `USR-SVC-403`); la ficha y sus pestañas se siguen leyendo. Cuando el usuario de la ficha
+es el de la sesión (`id` = `sub` del token), no ofrecer asignar ni quitar roles o perfiles,
+desactivar, borrar ni «sacar a la persona» (su primer paso es desactivar: `USR-SELF-403`). Los dos
+códigos se dicen distinto de «no tienes permiso», y ninguno se arregla recargando. En el alta, un
+nombre que empiece por `service-account-` es `USR-SVC-403`.
+
 **Sin CORS propio.** Todo navegador llega por `mto-gateway`, que resuelve el CORS y quita `Origin`
 antes de llamar a este servicio. Aquí no hay `.cors()` ni `OPTIONS` abierto: un *preflight* que
 llegara directamente pide token como cualquier otra petición, y nada contesta con
@@ -225,8 +289,8 @@ que es el valor del perfil `dev`).
 | Método y ruta | Qué hace |
 |---|---|
 | `GET /api/v1/users?search&username&email&enabled&emailVerified&attribute&first=0&max=20` | Búsqueda paginada por desplazamiento (`max` ≤ 200). `search` mira username, email, nombre y apellidos; `enabled` y `emailVerified` se combinan con cualquiera; `attribute` se repite para filtrar por atributos (`?attribute=departamento:taller`). Respuesta: `{content, first, max, total}` |
-| `POST /api/v1/users` | Alta. `201` + `Location`. Opcionales `temporaryPassword` (Keycloak obliga a cambiarla al entrar) y `requiredActions`. Habilitado salvo `enabled=false` |
-| `GET /api/v1/users/{userId}` | Detalle |
+| `POST /api/v1/users` | Alta. `201` + `Location`. Opcionales `temporaryPassword` (Keycloak obliga a cambiarla al entrar) y `requiredActions`. Habilitado salvo `enabled=false`. Un `username` que empiece por `service-account-` es `403 USR-SVC-403` |
+| `GET /api/v1/users/{userId}` | Detalle: `{id, username, firstName, lastName, email, emailVerified, enabled, createdAt, attributes, requiredActions, serviceAccount}` |
 | `PUT /api/v1/users/{userId}` | Datos básicos (`firstName`, `lastName`, `email`, `emailVerified`, `attributes`). Lo que no viene se conserva |
 | `PATCH /api/v1/users/{userId}/enabled` | `{"enabled": true\|false}` |
 | `DELETE /api/v1/users/{userId}` | `204` |
@@ -240,6 +304,10 @@ que es el valor del perfil `dev`).
 | `DELETE /api/v1/users/{userId}/offline-sessions/{sessionId}` | Cierra una offline. `204`; `404 SES-404` si no es de ese usuario |
 | `GET /api/v1/users/{userId}/credentials` | `[{id, type, userLabel, createdAt}]`. Sin secretos y sin metadatos de cifrado |
 | `DELETE /api/v1/users/{userId}/credentials/{credentialId}` | Quita una credencial. `204`; `404 CRED-404` si no es de ese usuario |
+
+Toda escritura de esta tabla y de las dos siguientes responde `403 USR-SVC-403` si `{userId}` es una
+cuenta de servicio, y `403 USR-SELF-403` si es quien llama y la acción es deshabilitarse, borrarse o
+cambiarse roles o perfiles: ver [Sobre quién no se actúa](#sobre-quién-no-se-actúa-cuentas-de-servicio-y-uno-mismo).
 
 ### Roles
 
@@ -662,8 +730,8 @@ src/main/java/com/alejandro/mtousers/
 │   ├── security/     SecurityConfiguration, SecurityRoles, KeycloakJwtAuthenticationConverter, ...
 │   └── web/          CorrelationIdFilter, OpenApiDocumentationConfiguration
 ├── controller/       UserController, RoleController, ProfileController
-├── service/          UserService, RoleService, ProfileService, AdminAuditLog (+ impl/)
-├── keycloak/         KeycloakAdminGateway (puerto) y KeycloakAdminClientGateway (admin client)
+├── service/          UserService, RoleService, ProfileService, AdminAuditLog (+ impl/, con TargetUserPolicy: sobre quién no se actúa)
+├── keycloak/         KeycloakAdminGateway (puerto), KeycloakAdminClientGateway (admin client) y ServiceAccounts
 ├── messaging/        el sobre (AsynchronousMessage, DomainEvent, MessageActor), UsersEventNames (el contrato),
 │                     UsersEventEnvelopeFactory, SensitiveKeys, MessagePayloadSignature, UsersEventSender,
 │                     UsersEventDispatcher (la cola y su hilo), RabbitUsersEventPublisher y NoOpUsersEventPublisher

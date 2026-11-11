@@ -34,11 +34,13 @@ class UserServiceImpl implements UserService {
     private final KeycloakAdminGateway keycloak;
     private final UserMapper userMapper;
     private final AdminAuditLog audit;
+    private final TargetUserPolicy policy;
 
-    UserServiceImpl(KeycloakAdminGateway keycloak, UserMapper userMapper, AdminAuditLog audit) {
+    UserServiceImpl(KeycloakAdminGateway keycloak, UserMapper userMapper, AdminAuditLog audit, TargetUserPolicy policy) {
         this.keycloak = keycloak;
         this.userMapper = userMapper;
         this.audit = audit;
+        this.policy = policy;
     }
 
     @Override
@@ -69,6 +71,7 @@ class UserServiceImpl implements UserService {
 
     @Override
     public UserResponse create(CreateUserRequest request) {
+        policy.requireUsernameNotReserved(request.username());
         UserRepresentation representation = userMapper.toRepresentation(request);
         if (representation.isEnabled() == null) {
             // Keycloak crea deshabilitado por defecto, que casi nunca es lo que se quiere al dar de alta.
@@ -86,7 +89,7 @@ class UserServiceImpl implements UserService {
     public UserResponse update(String userId, UpdateUserRequest request) {
         // Leer, aplicar y escribir: la Admin API reemplaza la representación entera, así que
         // mandar solo los campos cambiados dejaría a null todo lo demás.
-        UserRepresentation representation = keycloak.findUser(userId);
+        UserRepresentation representation = policy.requireAdministrable(userId);
         userMapper.applyUpdate(request, representation);
         keycloak.updateUser(userId, representation);
         audit.record(AdminAction.USER_UPDATED, userId, representation.getUsername(),
@@ -96,7 +99,10 @@ class UserServiceImpl implements UserService {
 
     @Override
     public UserResponse setEnabled(String userId, boolean enabled) {
-        UserRepresentation representation = keycloak.findUser(userId);
+        if (!enabled) {
+            policy.requireNotSelf(userId, "disable your own account");
+        }
+        UserRepresentation representation = policy.requireAdministrable(userId);
         representation.setEnabled(enabled);
         keycloak.updateUser(userId, representation);
         audit.record(enabled ? AdminAction.USER_ENABLED : AdminAction.USER_DISABLED, userId,
@@ -111,19 +117,22 @@ class UserServiceImpl implements UserService {
      */
     @Override
     public void delete(String userId) {
-        UserRepresentation representation = keycloak.findUser(userId);
+        policy.requireNotSelf(userId, "delete your own account");
+        UserRepresentation representation = policy.requireAdministrable(userId);
         keycloak.deleteUser(userId);
         audit.record(AdminAction.USER_DELETED, userId, representation.getUsername(), Map.of());
     }
 
     @Override
     public void resetPassword(String userId, ResetPasswordRequest request) {
+        policy.requireAdministrable(userId);
         keycloak.resetPassword(userId, request.password(), request.isTemporary());
         audit.record(AdminAction.PASSWORD_RESET, userId, detail("temporary", request.isTemporary()));
     }
 
     @Override
     public void executeActionsEmail(String userId, ExecuteActionsEmailRequest request) {
+        policy.requireAdministrable(userId);
         List<String> actions = request.actions().stream().map(RequiredAction::name).toList();
         keycloak.executeActionsEmail(userId, actions, request.lifespanSeconds(), request.clientId(), request.redirectUri());
         audit.record(AdminAction.ACTIONS_EMAIL_SENT, userId, detail("actions", actions, "clientId", request.clientId()));
@@ -136,6 +145,7 @@ class UserServiceImpl implements UserService {
 
     @Override
     public void revokeAllSessions(String userId) {
+        policy.requireAdministrable(userId);
         keycloak.logoutUser(userId);
         audit.record(AdminAction.ALL_SESSIONS_REVOKED, userId, Map.of());
     }
@@ -147,6 +157,7 @@ class UserServiceImpl implements UserService {
      */
     @Override
     public void revokeSession(String userId, String sessionId) {
+        policy.requireAdministrable(userId);
         boolean belongsToUser = keycloak.listUserSessions(userId).stream()
                 .map(UserSessionRepresentation::getId)
                 .anyMatch(sessionId::equals);
@@ -180,6 +191,7 @@ class UserServiceImpl implements UserService {
      */
     @Override
     public void revokeAllOfflineSessions(String userId) {
+        policy.requireAdministrable(userId);
         int closed = 0;
         for (UserSessionRepresentation session : offlineSessions(userId)) {
             try {
@@ -195,6 +207,7 @@ class UserServiceImpl implements UserService {
     /** Misma comprobacion que en una sesion normal, y por el mismo motivo. */
     @Override
     public void revokeOfflineSession(String userId, String sessionId) {
+        policy.requireAdministrable(userId);
         boolean belongsToUser = offlineSessions(userId).stream()
                 .map(UserSessionRepresentation::getId)
                 .anyMatch(sessionId::equals);
@@ -217,6 +230,7 @@ class UserServiceImpl implements UserService {
      */
     @Override
     public void deleteCredential(String userId, String credentialId) {
+        policy.requireAdministrable(userId);
         String type = keycloak.listCredentials(userId).stream()
                 .filter(credential -> credentialId.equals(credential.getId()))
                 .map(CredentialRepresentation::getType)

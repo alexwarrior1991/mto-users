@@ -79,7 +79,7 @@ public class RoleController {
     }
 
     @PutMapping("/{userId}/roles/clients/{clientId}")
-    @Operation(summary = "Assign roles of a client to a user", description = "Adds to what the user already has. Returns the updated assignments.")
+    @Operation(summary = "Assign roles of a client to a user", description = "Adds to what the user already has. Returns the updated assignments. 403 USR-SELF-403 on oneself; 403 USR-SVC-403 on a service account.")
     public UserRolesResponse addClientRoles(
             @PathVariable @Pattern(regexp = UserController.USER_ID_PATTERN, message = UserController.USER_ID_MESSAGE) String userId,
             @PathVariable @Pattern(regexp = CLIENT_ID_PATTERN, message = CLIENT_ID_MESSAGE) String clientId,
@@ -88,7 +88,7 @@ public class RoleController {
     }
 
     @DeleteMapping("/{userId}/roles/clients/{clientId}")
-    @Operation(summary = "Remove roles of a client from a user", description = "The roles to remove travel in the body. Returns the updated assignments.")
+    @Operation(summary = "Remove roles of a client from a user", description = "The roles to remove travel in the body. Returns the updated assignments. 403 USR-SELF-403 on oneself; 403 USR-SVC-403 on a service account.")
     public UserRolesResponse removeClientRoles(
             @PathVariable @Pattern(regexp = UserController.USER_ID_PATTERN, message = UserController.USER_ID_MESSAGE) String userId,
             @PathVariable @Pattern(regexp = CLIENT_ID_PATTERN, message = CLIENT_ID_MESSAGE) String clientId,

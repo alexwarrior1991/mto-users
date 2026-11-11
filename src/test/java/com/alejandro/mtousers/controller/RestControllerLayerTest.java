@@ -22,6 +22,8 @@ import com.alejandro.mtousers.exception.CredentialNotFoundException;
 import com.alejandro.mtousers.exception.GlobalExceptionHandler;
 import com.alejandro.mtousers.exception.InvalidSearchException;
 import com.alejandro.mtousers.exception.KeycloakUnavailableException;
+import com.alejandro.mtousers.exception.SelfAdministrationException;
+import com.alejandro.mtousers.exception.ServiceAccountProtectedException;
 import com.alejandro.mtousers.exception.SessionNotFoundException;
 import com.alejandro.mtousers.exception.UserAlreadyExistsException;
 import com.alejandro.mtousers.exception.UserNotFoundException;
@@ -332,6 +334,39 @@ class RestControllerLayerTest {
                 .andExpect(jsonPath("$.errorCode").value("KC-503"));
     }
 
+    /**
+     * El objetivo que no se admite es un 403 con su propio código: a quien llama no le falta ningún
+     * permiso, así que no puede confundirse con el AUTH-403 de la cadena de seguridad.
+     */
+    @Test
+    void aProtectedTargetIsA403WithItsOwnCodeAndNotAMissingPermission() throws Exception {
+        when(userService.setEnabled(USER_ID, false))
+                .thenThrow(ServiceAccountProtectedException.readOnly("service-account-mto-users-svc"));
+        when(roleService.addClientRoles(any(), any(), any()))
+                .thenThrow(new SelfAdministrationException("change your own roles"));
+        when(userService.get(USER_ID)).thenReturn(new UserResponse(USER_ID, "service-account-mto-users-svc", null, null, null,
+                false, true, Instant.EPOCH, Map.of(), List.of(), true));
+
+        mockMvc.perform(patch(USERS + "/" + USER_ID + "/enabled").with(admin())
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"enabled\":false}"))
+                .andExpect(status().isForbidden())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.errorCode").value("USR-SVC-403"))
+                .andExpect(jsonPath("$.type").value("urn:problem:mto-users:USR-SVC-403"))
+                .andExpect(jsonPath("$.detail").value(
+                        "User service-account-mto-users-svc is the service account of a client: it is read-only through this API"));
+        mockMvc.perform(put(USERS + "/" + USER_ID + "/roles/clients/mto-stock-api").with(admin())
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"roles\":[\"stock-read\"]}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.errorCode").value("USR-SELF-403"))
+                .andExpect(jsonPath("$.detail").value("You cannot change your own roles: it has to be done by another administrator"));
+
+        // Y la lectura la marca, para que una pantalla no ofrezca lo que se va a rechazar.
+        mockMvc.perform(get(USERS + "/" + USER_ID).with(admin()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.serviceAccount").value(true));
+    }
+
     @Test
     void anImpossibleUserIdIsRejectedBeforeReachingKeycloak() throws Exception {
         mockMvc.perform(get(USERS + "/{id}", "not$valid").with(admin()))
@@ -394,7 +429,7 @@ class RestControllerLayerTest {
     }
 
     private static UserResponse user(String username) {
-        return new UserResponse(USER_ID, username, null, null, username + "@mto.local", false, true, Instant.EPOCH, Map.of(), List.of());
+        return new UserResponse(USER_ID, username, null, null, username + "@mto.local", false, true, Instant.EPOCH, Map.of(), List.of(), false);
     }
 
     /**
