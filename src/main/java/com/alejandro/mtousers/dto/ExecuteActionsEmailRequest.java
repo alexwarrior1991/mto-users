@@ -22,4 +22,12 @@ public record ExecuteActionsEmailRequest(
         @Size(max = 255) String clientId,
         @Size(max = 2048) String redirectUri
 ) {
+
+    /**
+     * Si alguna de las acciones pedidas pone o cambia una credencial. No se llama {@code isX} ni
+     * {@code getX} para que nadie lo tome por una propiedad del cuerpo.
+     */
+    public boolean touchesCredentials() {
+        return actions != null && actions.stream().anyMatch(action -> action != null && action.touchesCredentials());
+    }
 }

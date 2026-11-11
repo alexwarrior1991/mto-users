@@ -30,6 +30,9 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
@@ -211,8 +214,50 @@ class ApiAuthorizationRulesTest {
             mockMvc.perform(json(post(USERS), USER_JSON).with(role(SecurityRoles.USERS_WRITE))).andExpect(status().isCreated());
             mockMvc.perform(json(put(USER), "{\"firstName\":\"Ana\"}").with(role(SecurityRoles.USERS_WRITE))).andExpect(status().isOk());
             mockMvc.perform(json(patch(USER + "/enabled"), "{\"enabled\":false}").with(role(SecurityRoles.USERS_WRITE))).andExpect(status().isOk());
-            mockMvc.perform(json(post(USER + "/execute-actions-email"), "{\"actions\":[\"UPDATE_PASSWORD\"]}").with(role(SecurityRoles.USERS_WRITE)))
+            mockMvc.perform(json(post(USER + "/execute-actions-email"), "{\"actions\":[\"VERIFY_EMAIL\"]}").with(role(SecurityRoles.USERS_WRITE)))
                     .andExpect(status().isAccepted());
+            mockMvc.perform(json(post(USER + "/execute-actions-email"),
+                            "{\"actions\":[\"VERIFY_EMAIL\",\"UPDATE_PROFILE\",\"TERMS_AND_CONDITIONS\"]}").with(role(SecurityRoles.USERS_WRITE)))
+                    .andExpect(status().isAccepted());
+        }
+
+        /**
+         * Un enlace que deja fijar la contraseña o el segundo factor es restablecer una credencial
+         * por correo. Con users-write solo —que también cambia el email— bastaría para quedarse
+         * con una cuenta, así que esas acciones piden además users-password-reset.
+         */
+        @Test
+        void anActionsEmailThatSetsACredentialNeedsPasswordResetAsWell() throws Exception {
+            for (String actions : List.of("[\"UPDATE_PASSWORD\"]", "[\"CONFIGURE_TOTP\"]", "[\"VERIFY_EMAIL\",\"UPDATE_PASSWORD\"]")) {
+                String body = "{\"actions\":" + actions + "}";
+                mockMvc.perform(json(post(USER + "/execute-actions-email"), body).with(role(SecurityRoles.USERS_WRITE)))
+                        .andExpect(status().isForbidden())
+                        .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+                        .andExpect(jsonPath("$.errorCode").value("AUTH-403"))
+                        .andExpect(jsonPath("$.status").value(403));
+                mockMvc.perform(json(post(USER + "/execute-actions-email"), body)
+                                .with(role(SecurityRoles.USERS_WRITE, SecurityRoles.USERS_PASSWORD_RESET)))
+                        .andExpect(status().isAccepted());
+            }
+            // Solo llegaron al servicio las tres peticiones con los dos permisos.
+            verify(userService, times(3)).executeActionsEmail(any(), any());
+        }
+
+        /** Un cuerpo que no vale es un 400 antes que un 403: la regla lee un cuerpo ya validado. */
+        @Test
+        void anInvalidActionsEmailIsStillA400() throws Exception {
+            mockMvc.perform(json(post(USER + "/execute-actions-email"), "{\"actions\":[]}").with(role(SecurityRoles.USERS_WRITE)))
+                    .andExpect(status().isBadRequest());
+            mockMvc.perform(json(post(USER + "/execute-actions-email"), "{}").with(role(SecurityRoles.USERS_WRITE)))
+                    .andExpect(status().isBadRequest());
+        }
+
+        /** El alta no manda ningún correo: sus acciones requeridas siguen siendo de users-write. */
+        @Test
+        void creatingAUserWithRequiredActionsStaysWithWrite() throws Exception {
+            mockMvc.perform(json(post(USERS), "{\"username\":\"ana.nueva\",\"requiredActions\":[\"UPDATE_PASSWORD\"]}")
+                            .with(role(SecurityRoles.USERS_WRITE)))
+                    .andExpect(status().isCreated());
         }
 
         @Test
@@ -246,6 +291,10 @@ class ApiAuthorizationRulesTest {
                     .andExpect(status().isNoContent());
             mockMvc.perform(json(post(USER + "/execute-actions-email"), "{\"actions\":[\"UPDATE_PASSWORD\"]}").with(role(SecurityRoles.USERS_PASSWORD_RESET)))
                     .andExpect(status().isForbidden());
+            // Ni con una acción que no toca credenciales: sin users-write la ruta no se abre.
+            mockMvc.perform(json(post(USER + "/execute-actions-email"), "{\"actions\":[\"VERIFY_EMAIL\"]}").with(role(SecurityRoles.USERS_PASSWORD_RESET)))
+                    .andExpect(status().isForbidden());
+            verify(userService, never()).executeActionsEmail(any(), any());
             mockMvc.perform(json(post(USERS), USER_JSON).with(role(SecurityRoles.USERS_PASSWORD_RESET))).andExpect(status().isForbidden());
         }
 

@@ -1,6 +1,7 @@
 package com.alejandro.mtousers.controller;
 
 import com.alejandro.mtousers.configuration.security.SecurityConfiguration;
+import com.alejandro.mtousers.configuration.security.SecurityRoles;
 import com.alejandro.mtousers.dto.CreateUserRequest;
 import com.alejandro.mtousers.dto.ExecuteActionsEmailRequest;
 import com.alejandro.mtousers.dto.PageResponse;
@@ -22,6 +23,7 @@ import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -57,6 +59,10 @@ public class UserController {
     static final String SESSION_ID_MESSAGE = "must be a Keycloak session id";
     static final String CREDENTIAL_ID_PATTERN = "[A-Za-z0-9:._-]{1,255}";
     static final String CREDENTIAL_ID_MESSAGE = "must be a Keycloak credential id";
+
+    /** Acciones de credencial solo con {@code users-password-reset}; el resto, sin nada más. */
+    static final String ACTIONS_EMAIL_RULE =
+            "!#request.touchesCredentials() or hasRole('" + SecurityRoles.USERS_PASSWORD_RESET + "')";
 
     private final UserService userService;
 
@@ -206,9 +212,22 @@ public class UserController {
         return ResponseEntity.noContent().build();
     }
 
+    /**
+     * La cadena de filtros ya ha pedido {@code users-write} (la regla general de {@code POST}).
+     * Lo que se comprueba aquí depende del cuerpo, y la cadena no lo ve: un enlace que deja fijar
+     * la contraseña o el segundo factor es restablecer una credencial por correo, y con
+     * {@code users-write} solo —que también cambia el email con {@code PUT}— bastaría para
+     * quedarse con una cuenta. Esas acciones piden además {@code users-password-reset}; sin él,
+     * 403 {@code AUTH-403}. El cuerpo llega aquí ya validado.
+     */
     @PostMapping("/{userId}/execute-actions-email")
-    @Operation(summary = "Email the user a link to complete required actions", description = "UPDATE_PASSWORD, VERIFY_EMAIL... Needs SMTP configured in the realm.")
+    @PreAuthorize(ACTIONS_EMAIL_RULE)
+    @Operation(summary = "Email the user a link to complete required actions",
+            description = "UPDATE_PASSWORD, VERIFY_EMAIL... Needs SMTP configured in the realm. Needs users-write; "
+                    + "with an action that sets a credential (UPDATE_PASSWORD, CONFIGURE_TOTP) it needs "
+                    + "users-password-reset as well, or the answer is 403.")
     @ApiResponse(responseCode = "202", description = "Email requested")
+    @ApiResponse(responseCode = "403", description = "Missing users-write, or users-password-reset for a credential action")
     public ResponseEntity<Void> executeActionsEmail(@PathVariable @Pattern(regexp = USER_ID_PATTERN, message = USER_ID_MESSAGE) String userId,
                                                     @Valid @RequestBody ExecuteActionsEmailRequest request) {
         userService.executeActionsEmail(userId, request);

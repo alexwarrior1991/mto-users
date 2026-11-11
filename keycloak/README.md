@@ -19,7 +19,8 @@ Permisos (roles del cliente `mto-users-api`): `users-read`, `users-write`, `user
 `users-credentials-write`, `ops-metrics`, `ops-write`. Ninguno implica otro:
 `users-sessions-write` —cerrar las sesiones abiertas de alguien, normales u offline— no lo dan ni
 `users-write` ni `users-delete`, y `users-credentials-write` —quitar una credencial, que puede ser
-el segundo factor— no lo da `users-password-reset`.
+el segundo factor— no lo da `users-password-reset`. El correo de acciones con `UPDATE_PASSWORD` o
+`CONFIGURE_TOTP` pide dos a la vez, `users-write` y `users-password-reset`: ninguno de los dos solo.
 
 Perfiles (roles compuestos de realm): `mto-users-viewer` (`users-read`), `mto-users-manager`
 (todo menos `users-delete`) y `mto-users-admin` (todo). `mto-ops`, que vive en `mto-platform`,

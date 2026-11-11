@@ -15,7 +15,10 @@ public final class SecurityRoles {
     /** Consulta de usuarios, de sus roles y perfiles, y de los catalogos de roles y perfiles. */
     public static final String USERS_READ = "USERS_READ";
 
-    /** Alta y modificacion de usuarios, habilitar y deshabilitar, y envio de acciones requeridas. */
+    /**
+     * Alta y modificacion de usuarios, habilitar y deshabilitar, y envio de acciones requeridas.
+     * Para las acciones que ponen una credencial hace falta ademas {@link #USERS_PASSWORD_RESET}.
+     */
     public static final String USERS_WRITE = "USERS_WRITE";
 
     /** Borrado de usuarios. Aparte de write: es la unica operacion irreversible. */
@@ -24,7 +27,11 @@ public final class SecurityRoles {
     /** Asignar y quitar roles de cliente a un usuario. */
     public static final String USERS_ROLES_WRITE = "USERS_ROLES_WRITE";
 
-    /** Fijar una contrasena temporal a un usuario. */
+    /**
+     * Fijar una contrasena temporal a un usuario. Y, junto con {@link #USERS_WRITE}, mandarle un
+     * correo con una accion que pone una credencial ({@code UPDATE_PASSWORD}, {@code CONFIGURE_TOTP}):
+     * es restablecerla por otro camino. Solo no abre ese envio.
+     */
     public static final String USERS_PASSWORD_RESET = "USERS_PASSWORD_RESET";
 
     /** Asignar y quitar perfiles (roles compuestos de realm) a un usuario. */

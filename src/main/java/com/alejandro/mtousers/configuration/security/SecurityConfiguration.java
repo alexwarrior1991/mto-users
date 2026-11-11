@@ -128,6 +128,9 @@ public class SecurityConfiguration {
                     // no puede quedarse en el 'anyRequest().authenticated()' del final.
                     authorize.requestMatchers(HttpMethod.HEAD, API + "/**").hasRole(SecurityRoles.USERS_READ);
                     // Alta, modificación, habilitar/deshabilitar y envío de acciones requeridas.
+                    // El correo de acciones pide además users-password-reset cuando alguna pone una
+                    // credencial: depende del cuerpo, así que lo comprueba el @PreAuthorize de
+                    // UserController.executeActionsEmail, no esta cadena.
                     authorize.requestMatchers(HttpMethod.POST, API + "/**").hasRole(SecurityRoles.USERS_WRITE);
                     authorize.requestMatchers(HttpMethod.PUT, API + "/**").hasRole(SecurityRoles.USERS_WRITE);
                     authorize.requestMatchers(HttpMethod.PATCH, API + "/**").hasRole(SecurityRoles.USERS_WRITE);

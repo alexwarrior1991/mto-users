@@ -90,6 +90,14 @@ Packages under `com.alejandro.mtousers`:
   `keycloak/mto-users-partial-import.json` (and to `mto-platform/keycloak/mto-ops-cross-service.json`
   if it is an `ops-*` role). A route with more than one segment after `{userId}` needs its own
   `requestMatcher`: the `DELETE API + "/*"` rule does not reach `/{userId}/sessions/{sessionId}`.
+- **The actions email needs two permissions when an action sets a credential.**
+  `POST /{userId}/execute-actions-email` is `users-write` by the chain; with `UPDATE_PASSWORD` or
+  `CONFIGURE_TOTP` (`RequiredAction.touchesCredentials()`, a `switch` without `default` so a new
+  action must choose its side) the `@PreAuthorize` of `UserController.executeActionsEmail` asks for
+  `users-password-reset` **as well** (403 `AUTH-403`): such a link resets a credential by mail, and
+  `users-write` can also change the email. Neither permission alone is enough; this is the only
+  route whose permission depends on the body. `requiredActions` on create send no mail and stay
+  with `users-write`.
 - **Every `UsersException` subclass is named in an `@ExceptionHandler` list** of
   `GlobalExceptionHandler`; the `UsersException` handler is a 422 safety net, not a route.
   `GlobalExceptionHandlerTest` scans the package and fails if one is missing — calling a handler

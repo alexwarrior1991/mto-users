@@ -23,6 +23,7 @@ import com.alejandro.mtousers.dto.UserSearchCriteria;
 import com.alejandro.mtousers.dto.UserSessionResponse;
 import com.alejandro.mtousers.exception.CredentialNotFoundException;
 import com.alejandro.mtousers.exception.InvalidSearchException;
+import com.alejandro.mtousers.exception.KeycloakUnavailableException;
 import com.alejandro.mtousers.exception.ProfileNotFoundException;
 import com.alejandro.mtousers.exception.ProtectedClientException;
 import com.alejandro.mtousers.exception.RoleNotFoundException;
@@ -65,9 +66,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -282,6 +285,54 @@ class BusinessLayerTest {
     }
 
     /**
+     * Una sesión offline por la que han pasado dos clientes sale bajo los dos. Antes se cerraba dos
+     * veces, la segunda era un 404 y el barrido se cortaba ahí: las siguientes seguían vivas y de
+     * las ya cerradas no quedaba ni línea de auditoría ni evento.
+     */
+    @Test
+    void closingEveryOfflineSessionClosesEachOnceAndDoesNotStopAtOneThatIsAlreadyGone() {
+        when(keycloak.findClientsWithOfflineTokens(USER_ID)).thenReturn(List.of("uuid-frontend", "uuid-movil"));
+        when(keycloak.listOfflineSessions(USER_ID, "uuid-frontend")).thenReturn(List.of(
+                session("offline-1", "10.0.0.9", Map.of("uuid-frontend", "mto-frontend")),
+                session("offline-2", "10.0.0.9", Map.of("uuid-frontend", "mto-frontend"))));
+        when(keycloak.listOfflineSessions(USER_ID, "uuid-movil")).thenReturn(List.of(
+                session("offline-1", "10.0.0.9", Map.of("uuid-movil", "mto-movil")),
+                session("offline-3", "10.0.0.10", Map.of("uuid-movil", "mto-movil"))));
+
+        // Listada una sola vez, con los clientes de sus dos apariciones.
+        var listed = userService.listOfflineSessions(USER_ID);
+        assertEquals(List.of("offline-1", "offline-2", "offline-3"), listed.stream().map(UserSessionResponse::id).toList());
+        assertEquals(List.of("mto-frontend", "mto-movil"), listed.getFirst().clients());
+
+        // offline-2 caduca entre el listado y su cierre: no corta el barrido.
+        doThrow(new SessionNotFoundException("offline-2")).when(keycloak).deleteSession("offline-2", true);
+
+        userService.revokeAllOfflineSessions(USER_ID);
+
+        verify(keycloak, times(1)).deleteSession("offline-1", true);
+        verify(keycloak).deleteSession("offline-2", true);
+        verify(keycloak).deleteSession("offline-3", true);
+        assertTrue(onlyAuditLine().contains("action=ALL_OFFLINE_SESSIONS_REVOKED"));
+        assertTrue(onlyAuditLine().contains("sessions=2"), "Cuenta las que cerró, no la que ya no estaba");
+        assertEquals(2, onlyEvent().detail().get("sessions"));
+    }
+
+    /** Lo que no es «ya no existe» sí corta: con Keycloak caído no se da el barrido por hecho. */
+    @Test
+    void closingEveryOfflineSessionStillFailsWhenKeycloakDoes() {
+        when(keycloak.findClientsWithOfflineTokens(USER_ID)).thenReturn(List.of("uuid-frontend"));
+        when(keycloak.listOfflineSessions(USER_ID, "uuid-frontend"))
+                .thenReturn(List.of(session("offline-1", "10.0.0.9", Map.of())));
+        doThrow(new KeycloakUnavailableException("down", null))
+                .when(keycloak).deleteSession("offline-1", true);
+
+        assertThrows(KeycloakUnavailableException.class,
+                () -> userService.revokeAllOfflineSessions(USER_ID));
+        assertEquals(0, auditLines.list.size());
+        assertTrue(events.published.isEmpty());
+    }
+
+    /**
      * Quitar una credencial se audita con su tipo, que es lo que distingue quitarle a alguien el
      * segundo factor de quitarle una contrasena vieja. Por eso se busca antes entre las suyas.
      */
@@ -418,7 +469,7 @@ class BusinessLayerTest {
         assertEquals("ana.uno", onlyEvent().targetUsername());
 
         userService.setEnabled(USER_ID, true);
-        verify(keycloak, org.mockito.Mockito.times(2)).updateUser(org.mockito.ArgumentMatchers.eq(USER_ID), sent.capture());
+        verify(keycloak, times(2)).updateUser(org.mockito.ArgumentMatchers.eq(USER_ID), sent.capture());
         assertEquals(Boolean.TRUE, sent.getValue().isEnabled());
         assertTrue(auditLines.list.getLast().getFormattedMessage().contains("action=USER_ENABLED"),
                 "Cada sentido deja su propia accion");
